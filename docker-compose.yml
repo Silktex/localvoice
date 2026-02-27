@@ -1,0 +1,117 @@
+services:
+  whisper-stt:
+    build:
+      context: ./whisper-stt
+      dockerfile: Dockerfile
+    container_name: localvoice-whisper-stt
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      - whisper-models:/models
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - DEVICE=${WHISPER_DEVICE:-vulkan}
+      - COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - OMP_NUM_THREADS=${WHISPER_THREADS:-4}
+      - MODEL_CACHE_DIR=/models
+      - STT_BACKEND_URL=http://whispercpp-backend:8081/inference
+      - STT_BACKEND_TIMEOUT=300
+    depends_on:
+      - whispercpp-backend
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  whispercpp-backend:
+    image: ghcr.io/ggml-org/whisper.cpp:main-vulkan
+    container_name: localvoice-whispercpp-backend
+    entrypoint: ["whisper-server"]
+    volumes:
+      - whisper-models:/models
+    devices:
+      - "/dev/dri:/dev/dri"
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+      - WHISPER_THREADS=${WHISPER_THREADS:-4}
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - --inference-path
+      - /inference
+      - -m
+      - /models/ggml-${WHISPER_MODEL:-small}.bin
+      - -t
+      - "${WHISPER_THREADS:-4}"
+      - --convert
+    restart: unless-stopped
+
+  piper-tts:
+    build:
+      context: ./piper-tts
+      dockerfile: Dockerfile
+    container_name: localvoice-piper-tts
+    ports:
+      - "0.0.0.0:8000:8000"
+    volumes:
+      - piper-models:/models/piper
+    environment:
+      - PIPER_VOICE=${PIPER_VOICE:-en_US-lessac-medium}
+      - PIPER_DATA_DIR=/models/piper
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  parler-tts:
+    build:
+      context: ./parler-tts
+      dockerfile: Dockerfile
+    container_name: localvoice-parler-tts
+    profiles:
+      - quality-tts
+    ports:
+      - "0.0.0.0:8001:8001"
+    volumes:
+      - parler-models:/models
+    environment:
+      - MODEL_NAME=${PARLER_MODEL:-parler-tts/parler_tts_mini_v0.1}
+      - MODEL_CACHE_DIR=/models
+      - DEVICE=cpu
+      - SAMPLE_RATE=24000
+      - TTS_DESCRIPTION=${PARLER_DESCRIPTION:-A female speaker delivers a slightly expressive and animated speech.}
+      - OMP_NUM_THREADS=${PARLER_THREADS:-6}
+      - MKL_NUM_THREADS=${PARLER_THREADS:-6}
+      - OPENBLAS_NUM_THREADS=${PARLER_THREADS:-6}
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 3
+
+volumes:
+  whisper-models:
+  piper-models:
+  parler-models:

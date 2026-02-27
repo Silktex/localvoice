@@ -1,0 +1,16 @@
+{
+  "name": "localvoice",
+  "version": "1.0.0",
+  "description": "CLI for the LocalVoice Docker voice stack (STT + TTS)",
+  "type": "module",
+  "bin": {
+    "localvoice": "./localvoice.ts"
+  },
+  "scripts": {
+    "start": "bun localvoice.ts",
+    "check": "bun build --target bun --dry-run localvoice.ts"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.10"
+  }
+}

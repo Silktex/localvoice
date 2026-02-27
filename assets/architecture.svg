@@ -1,0 +1,291 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800">
+  <defs>
+    <!-- Connection gradient: orange to red -->
+    <linearGradient id="connGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F07A3A"/>
+      <stop offset="100%" stop-color="#E8432A"/>
+    </linearGradient>
+    <!-- Connection gradient vertical -->
+    <linearGradient id="connGradV" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F07A3A"/>
+      <stop offset="50%" stop-color="#FF4C30"/>
+      <stop offset="100%" stop-color="#E8432A"/>
+    </linearGradient>
+    <!-- Card gradient -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1F1F1F"/>
+      <stop offset="100%" stop-color="#1A1A1A"/>
+    </linearGradient>
+    <!-- Docker gradient -->
+    <linearGradient id="dockerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141414"/>
+      <stop offset="100%" stop-color="#111111"/>
+    </linearGradient>
+    <!-- Title accent gradient -->
+    <linearGradient id="titleAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E8432A"/>
+      <stop offset="50%" stop-color="#FF4C30"/>
+      <stop offset="100%" stop-color="#F07A3A"/>
+    </linearGradient>
+    <!-- Whisper card top border -->
+    <linearGradient id="whisperBorder" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#E8432A"/>
+      <stop offset="100%" stop-color="#FF4C30"/>
+    </linearGradient>
+    <!-- Piper card top border -->
+    <linearGradient id="piperBorder" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#4CAF50"/>
+      <stop offset="100%" stop-color="#66BB6A"/>
+    </linearGradient>
+    <!-- Parler card top border -->
+    <linearGradient id="parlerBorder" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FF8C42"/>
+      <stop offset="100%" stop-color="#F07A3A"/>
+    </linearGradient>
+    <!-- CLI gradient -->
+    <linearGradient id="cliGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#242424"/>
+      <stop offset="100%" stop-color="#1A1A1A"/>
+    </linearGradient>
+    <!-- Left connection -->
+    <linearGradient id="connLeft" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#F07A3A"/>
+      <stop offset="100%" stop-color="#E8432A"/>
+    </linearGradient>
+    <!-- Center connection -->
+    <linearGradient id="connCenter" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#FF4C30"/>
+      <stop offset="100%" stop-color="#E8432A"/>
+    </linearGradient>
+    <!-- Right connection -->
+    <linearGradient id="connRight" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#FF8C42"/>
+      <stop offset="100%" stop-color="#F07A3A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="500" fill="#0D0D0D" rx="0"/>
+
+  <!-- Subtle grid pattern -->
+  <line x1="0" y1="100" x2="800" y2="100" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="0" y1="200" x2="800" y2="200" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="0" y1="300" x2="800" y2="300" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="0" y1="400" x2="800" y2="400" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="200" y1="0" x2="200" y2="500" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="400" y1="0" x2="400" y2="500" style="stroke:#151515;stroke-width:0.5"/>
+  <line x1="600" y1="0" x2="600" y2="500" style="stroke:#151515;stroke-width:0.5"/>
+
+  <!-- ==================== TITLE BAR ==================== -->
+  <!-- Title accent line -->
+  <rect x="40" y="28" width="50" height="3" rx="1.5" fill="url(#titleAccent)"/>
+
+  <!-- Title text -->
+  <text x="40" y="58" style="font-size:26px;font-weight:800;letter-spacing:4px;fill:#FFFFFF" font-family="system-ui, -apple-system, sans-serif">LOCALVOICE</text>
+
+  <!-- Subtitle -->
+  <text x="40" y="78" style="font-size:12px;font-weight:400;letter-spacing:1.5px;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">LOCAL VOICE INFRASTRUCTURE</text>
+
+  <!-- Version badge -->
+  <rect x="680" y="40" width="80" height="24" rx="12" fill="none" style="stroke:#2E2E2E;stroke-width:1"/>
+  <text x="720" y="56" style="font-size:10px;font-weight:500;fill:#A0A0A0;text-anchor:middle;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">v1.0</text>
+
+  <!-- ==================== DOCKER CONTAINER ==================== -->
+  <!-- Docker wrapper with dashed border -->
+  <rect x="30" y="100" width="740" height="240" rx="12" fill="url(#dockerGrad)" style="stroke:#2E2E2E;stroke-width:1.5;stroke-dasharray:8,4"/>
+
+  <!-- Docker label -->
+  <rect x="50" y="92" width="140" height="18" rx="4" fill="#0D0D0D"/>
+  <text x="56" y="105" style="font-size:10px;font-weight:600;letter-spacing:1.5px;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">DOCKER COMPOSE</text>
+  <!-- Docker icon (whale) simplified -->
+  <rect x="173" y="95" width="5" height="4" rx="0.5" fill="#2E2E2E"/>
+  <rect x="180" y="95" width="5" height="4" rx="0.5" fill="#2E2E2E"/>
+  <rect x="173" y="100" width="5" height="4" rx="0.5" fill="#2E2E2E"/>
+  <rect x="180" y="100" width="5" height="4" rx="0.5" fill="#2E2E2E"/>
+  <rect x="166" y="100" width="5" height="4" rx="0.5" fill="#2E2E2E"/>
+
+  <!-- ==================== SERVICE CARD: WHISPER STT ==================== -->
+  <g>
+    <!-- Card background -->
+    <rect x="55" y="125" width="210" height="195" rx="8" fill="url(#cardGrad)" style="stroke:#2E2E2E;stroke-width:1"/>
+    <!-- Top accent border -->
+    <rect x="55" y="125" width="210" height="3" rx="1.5" fill="url(#whisperBorder)"/>
+
+    <!-- Microphone icon -->
+    <g transform="translate(75, 150)">
+      <!-- Mic body -->
+      <rect x="6" y="0" width="10" height="18" rx="5" fill="none" style="stroke:#E8432A;stroke-width:1.5"/>
+      <!-- Mic arc -->
+      <path d="M2,14 Q2,26 11,26 Q20,26 20,14" fill="none" style="stroke:#E8432A;stroke-width:1.5"/>
+      <!-- Mic stand -->
+      <line x1="11" y1="26" x2="11" y2="32" style="stroke:#E8432A;stroke-width:1.5"/>
+      <line x1="6" y1="32" x2="16" y2="32" style="stroke:#E8432A;stroke-width:1.5"/>
+    </g>
+
+    <!-- Service name -->
+    <text x="105" y="163" style="font-size:15px;font-weight:700;fill:#FFFFFF;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">WHISPER STT</text>
+    <!-- Service description -->
+    <text x="105" y="179" style="font-size:10px;font-weight:400;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">Speech-to-Text</text>
+
+    <!-- Divider -->
+    <line x1="75" y1="195" x2="245" y2="195" style="stroke:#2E2E2E;stroke-width:0.5"/>
+
+    <!-- Model info -->
+    <text x="75" y="215" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">MODEL</text>
+    <text x="75" y="230" style="font-size:11px;font-weight:500;fill:#FFFFFF" font-family="system-ui, -apple-system, sans-serif">whisper-large-v3</text>
+
+    <!-- Port -->
+    <text x="75" y="253" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">ENDPOINT</text>
+    <text x="75" y="268" style="font-size:11px;font-weight:600;fill:#E8432A" font-family="system-ui, -apple-system, sans-serif">:8080</text>
+
+    <!-- Status indicator -->
+    <circle cx="240" y="270" r="4" fill="#E8432A" style="opacity:0.3"/>
+    <circle cx="240" y="270" r="2.5" fill="#E8432A"/>
+
+    <!-- Input badge -->
+    <rect x="160" y="260" width="55" height="18" rx="9" fill="#E8432A" style="opacity:0.12"/>
+    <text x="187" y="273" style="font-size:9px;font-weight:600;fill:#E8432A;text-anchor:middle;letter-spacing:0.3px" font-family="system-ui, -apple-system, sans-serif">INPUT</text>
+  </g>
+
+  <!-- ==================== SERVICE CARD: PIPER TTS ==================== -->
+  <g>
+    <!-- Card background -->
+    <rect x="295" y="125" width="210" height="195" rx="8" fill="url(#cardGrad)" style="stroke:#2E2E2E;stroke-width:1"/>
+    <!-- Top accent border -->
+    <rect x="295" y="125" width="210" height="3" rx="1.5" fill="url(#piperBorder)"/>
+
+    <!-- Speaker icon -->
+    <g transform="translate(315, 148)">
+      <path d="M0,10 L5,10 L12,4 L12,22 L5,16 L0,16 Z" fill="none" style="stroke:#4CAF50;stroke-width:1.5;stroke-linejoin:round"/>
+      <path d="M16,8 Q20,13 16,18" fill="none" style="stroke:#4CAF50;stroke-width:1.5"/>
+      <path d="M19,4 Q26,13 19,22" fill="none" style="stroke:#4CAF50;stroke-width:1.5"/>
+    </g>
+
+    <!-- Service name -->
+    <text x="345" y="163" style="font-size:15px;font-weight:700;fill:#FFFFFF;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">PIPER TTS</text>
+    <!-- Service description -->
+    <text x="345" y="179" style="font-size:10px;font-weight:400;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">Text-to-Speech</text>
+
+    <!-- Fast badge -->
+    <rect x="443" y="151" width="42" height="18" rx="9" fill="#4CAF50" style="opacity:0.15"/>
+    <text x="464" y="164" style="font-size:9px;font-weight:700;fill:#4CAF50;text-anchor:middle;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">FAST</text>
+
+    <!-- Divider -->
+    <line x1="315" y1="195" x2="485" y2="195" style="stroke:#2E2E2E;stroke-width:0.5"/>
+
+    <!-- Model info -->
+    <text x="315" y="215" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">ENGINE</text>
+    <text x="315" y="230" style="font-size:11px;font-weight:500;fill:#FFFFFF" font-family="system-ui, -apple-system, sans-serif">piper-tts (ONNX)</text>
+
+    <!-- Port -->
+    <text x="315" y="253" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">ENDPOINT</text>
+    <text x="315" y="268" style="font-size:11px;font-weight:600;fill:#4CAF50" font-family="system-ui, -apple-system, sans-serif">:8000</text>
+
+    <!-- Status indicator -->
+    <circle cx="480" y="270" r="4" fill="#4CAF50" style="opacity:0.3"/>
+    <circle cx="480" y="270" r="2.5" fill="#4CAF50"/>
+
+    <!-- Output badge -->
+    <rect x="400" y="260" width="62" height="18" rx="9" fill="#4CAF50" style="opacity:0.12"/>
+    <text x="431" y="273" style="font-size:9px;font-weight:600;fill:#4CAF50;text-anchor:middle;letter-spacing:0.3px" font-family="system-ui, -apple-system, sans-serif">OUTPUT</text>
+  </g>
+
+  <!-- ==================== SERVICE CARD: PARLER TTS ==================== -->
+  <g>
+    <!-- Card background -->
+    <rect x="535" y="125" width="210" height="195" rx="8" fill="url(#cardGrad)" style="stroke:#2E2E2E;stroke-width:1"/>
+    <!-- Top accent border -->
+    <rect x="535" y="125" width="210" height="3" rx="1.5" fill="url(#parlerBorder)"/>
+
+    <!-- Speaker icon with quality waves -->
+    <g transform="translate(555, 148)">
+      <path d="M0,10 L5,10 L12,4 L12,22 L5,16 L0,16 Z" fill="none" style="stroke:#FF8C42;stroke-width:1.5;stroke-linejoin:round"/>
+      <path d="M16,8 Q20,13 16,18" fill="none" style="stroke:#FF8C42;stroke-width:1.5"/>
+      <path d="M19,5 Q25,13 19,21" fill="none" style="stroke:#FF8C42;stroke-width:1.5"/>
+      <path d="M22,2 Q30,13 22,24" fill="none" style="stroke:#FF8C42;stroke-width:1.5"/>
+    </g>
+
+    <!-- Service name -->
+    <text x="588" y="163" style="font-size:15px;font-weight:700;fill:#FFFFFF;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">PARLER TTS</text>
+    <!-- Service description -->
+    <text x="588" y="179" style="font-size:10px;font-weight:400;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">Text-to-Speech</text>
+
+    <!-- Quality badge -->
+    <rect x="678" y="151" width="52" height="18" rx="9" fill="#FF8C42" style="opacity:0.15"/>
+    <text x="704" y="164" style="font-size:9px;font-weight:700;fill:#FF8C42;text-anchor:middle;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">QUALITY</text>
+
+    <!-- Divider -->
+    <line x1="555" y1="195" x2="725" y2="195" style="stroke:#2E2E2E;stroke-width:0.5"/>
+
+    <!-- Model info -->
+    <text x="555" y="215" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">MODEL</text>
+    <text x="555" y="230" style="font-size:11px;font-weight:500;fill:#FFFFFF" font-family="system-ui, -apple-system, sans-serif">parler-tts-large</text>
+
+    <!-- Port -->
+    <text x="555" y="253" style="font-size:9px;font-weight:500;fill:#A0A0A0;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">ENDPOINT</text>
+    <text x="555" y="268" style="font-size:11px;font-weight:600;fill:#FF8C42" font-family="system-ui, -apple-system, sans-serif">:8001</text>
+
+    <!-- Status indicator -->
+    <circle cx="720" y="270" r="4" fill="#FF8C42" style="opacity:0.3"/>
+    <circle cx="720" y="270" r="2.5" fill="#FF8C42"/>
+
+    <!-- Output badge -->
+    <rect x="640" y="260" width="62" height="18" rx="9" fill="#FF8C42" style="opacity:0.12"/>
+    <text x="671" y="273" style="font-size:9px;font-weight:600;fill:#FF8C42;text-anchor:middle;letter-spacing:0.3px" font-family="system-ui, -apple-system, sans-serif">OUTPUT</text>
+  </g>
+
+  <!-- ==================== CONNECTION LINES ==================== -->
+  <!-- Left connection: CLI to Whisper -->
+  <path d="M340,420 Q340,390 200,370 Q160,365 160,340" fill="none" style="stroke:url(#connLeft);stroke-width:2;stroke-linecap:round"/>
+  <!-- Arrowhead -->
+  <path d="M155,345 L160,335 L165,345" fill="none" style="stroke:#E8432A;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round"/>
+
+  <!-- Center connection: CLI to Piper -->
+  <line x1="400" y1="420" x2="400" y2="340" style="stroke:url(#connCenter);stroke-width:2;stroke-linecap:round"/>
+  <!-- Arrowhead -->
+  <path d="M395,345 L400,335 L405,345" fill="none" style="stroke:#E8432A;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round"/>
+
+  <!-- Right connection: CLI to Parler -->
+  <path d="M460,420 Q460,390 600,370 Q640,365 640,340" fill="none" style="fill:none;stroke:url(#connRight);stroke-width:2;stroke-linecap:round"/>
+  <!-- Arrowhead -->
+  <path d="M635,345 L640,335 L645,345" fill="none" style="stroke:#F07A3A;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round"/>
+
+  <!-- Connection dots (data flow indicators) -->
+  <circle cx="240" y="358" r="2" fill="#E8432A" style="opacity:0.6"/>
+  <circle cx="280" y="378" r="2" fill="#FF4C30" style="opacity:0.4"/>
+  <circle cx="400" y="380" r="2" fill="#FF4C30" style="opacity:0.6"/>
+  <circle cx="400" y="360" r="2" fill="#E8432A" style="opacity:0.4"/>
+  <circle cx="520" y="378" r="2" fill="#F07A3A" style="opacity:0.4"/>
+  <circle cx="560" y="358" r="2" fill="#FF8C42" style="opacity:0.6"/>
+
+  <!-- ==================== CLI TOOL BOX ==================== -->
+  <g>
+    <!-- CLI background -->
+    <rect x="280" y="420" width="240" height="60" rx="8" fill="url(#cliGrad)" style="stroke:#2E2E2E;stroke-width:1"/>
+    <!-- Accent line bottom -->
+    <rect x="280" y="477" width="240" height="3" rx="1.5" fill="url(#titleAccent)"/>
+
+    <!-- Terminal icon -->
+    <g transform="translate(300, 438)">
+      <path d="M0,0 L8,8 L0,16" fill="none" style="stroke:#FF4C30;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"/>
+      <line x1="12" y1="16" x2="24" y2="16" style="stroke:#FF4C30;stroke-width:2;stroke-linecap:round"/>
+    </g>
+
+    <!-- CLI name -->
+    <text x="335" y="450" style="font-size:14px;font-weight:700;fill:#FFFFFF;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">localvoice.ts</text>
+    <!-- CLI description -->
+    <text x="335" y="466" style="font-size:10px;font-weight:400;fill:#A0A0A0" font-family="system-ui, -apple-system, sans-serif">CLI Orchestrator · Bun Runtime</text>
+  </g>
+
+  <!-- ==================== DECORATIVE ELEMENTS ==================== -->
+  <!-- Top right decorative dots -->
+  <circle cx="640" y="35" r="1.5" fill="#E8432A" style="opacity:0.3"/>
+  <circle cx="650" y="35" r="1.5" fill="#FF4C30" style="opacity:0.3"/>
+  <circle cx="660" y="35" r="1.5" fill="#F07A3A" style="opacity:0.3"/>
+
+  <!-- Bottom left tech label -->
+  <text x="40" y="490" style="font-size:8px;font-weight:400;fill:#2E2E2E;letter-spacing:1px" font-family="system-ui, -apple-system, sans-serif">DOCKER · BUN · CUDA · ONNX</text>
+
+  <!-- Bottom right attribution -->
+  <text x="760" y="490" style="font-size:8px;font-weight:400;fill:#2E2E2E;text-anchor:end;letter-spacing:0.5px" font-family="system-ui, -apple-system, sans-serif">ARCHITECTURE v1.0</text>
+</svg>

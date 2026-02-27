@@ -1,0 +1,27 @@
+# Environment (may contain secrets)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / Bun
+node_modules/
+bun.lock
+
+# Caches
+.ruff_cache/
+
+# Plans (local working notes)
+Plans/
+
+# Test artifacts
+*.wav
+*.raw
+*.pcm

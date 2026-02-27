@@ -1,0 +1,8 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+transformers
+parler-tts
+numpy
+scipy
+pydantic
+python-multipart
