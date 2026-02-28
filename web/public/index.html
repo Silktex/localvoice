@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalVoice</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>LocalVoice</h1>
+    <div id="health-panel">
+      <span class="health-dot" data-service="3cx" title="3CX">3CX</span>
+      <span class="health-dot" data-service="whisper" title="Whisper STT">STT</span>
+      <span class="health-dot" data-service="piper" title="Piper TTS">Piper</span>
+      <span class="health-dot" data-service="parler" title="Parler TTS">Parler</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="recordings">Recordings</button>
+    <button class="tab" data-tab="stt">Speech-to-Text</button>
+    <button class="tab" data-tab="tts">Text-to-Speech</button>
+    <button class="tab" data-tab="sync">Sync Status</button>
+    <button class="tab" data-tab="models">Models</button>
+  </nav>
+
+  <!-- Recordings Tab -->
+  <section id="tab-recordings" class="tab-content active">
+    <div class="controls">
+      <label>Page size:
+        <select id="page-size">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </label>
+      <div class="pagination">
+        <button id="prev-page" disabled>Prev</button>
+        <span id="page-info">Page 1</span>
+        <button id="next-page">Next</button>
+      </div>
+    </div>
+    <table id="recordings-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>ID</th>
+          <th>Date</th>
+          <th>Duration</th>
+          <th>Caller</th>
+          <th>Called</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody id="recordings-body"></tbody>
+    </table>
+    <div id="recordings-loading" class="loading">Loading recordings...</div>
+    <div id="recordings-empty" class="empty" hidden>No recordings found.</div>
+  </section>
+
+  <!-- STT Tab -->
+  <section id="tab-stt" class="tab-content">
+    <div class="stt-container">
+      <div id="drop-zone" class="drop-zone">
+        <p>Drag &amp; drop an audio file here, or click to select</p>
+        <input type="file" id="stt-file" accept="audio/*" hidden>
+      </div>
+      <div id="stt-file-info" hidden>
+        <span id="stt-filename"></span>
+        <button id="stt-clear">Clear</button>
+      </div>
+      <div class="stt-options">
+        <label>Language:
+          <select id="stt-language">
+            <option value="">Auto-detect</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="ja">Japanese</option>
+            <option value="zh">Chinese</option>
+            <option value="pt">Portuguese</option>
+            <option value="ru">Russian</option>
+            <option value="ar">Arabic</option>
+            <option value="ko">Korean</option>
+          </select>
+        </label>
+        <label>Model:
+          <select id="stt-model">
+            <option value="medium">Medium (multilingual)</option>
+            <option value="small.en">Small.en (English)</option>
+          </select>
+        </label>
+        <button id="stt-transcribe" disabled>Transcribe</button>
+      </div>
+      <div id="stt-loading" class="loading" hidden>Transcribing...</div>
+      <div id="stt-result" hidden>
+        <label>Transcription:</label>
+        <textarea id="stt-text" readonly rows="8"></textarea>
+        <button id="stt-copy">Copy to Clipboard</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- TTS Tab -->
+  <section id="tab-tts" class="tab-content">
+    <div class="tts-container">
+      <label>Text to speak:</label>
+      <textarea id="tts-text" rows="4" placeholder="Enter text to synthesize..."></textarea>
+      <div class="tts-options">
+        <fieldset>
+          <legend>Engine</legend>
+          <label><input type="radio" name="tts-engine" value="piper" checked> Piper (fast)</label>
+          <label><input type="radio" name="tts-engine" value="parler"> Parler (quality)</label>
+        </fieldset>
+        <div id="parler-desc-group" hidden>
+          <label>Voice description:
+            <input type="text" id="tts-description" placeholder="A calm female speaker with clear enunciation">
+          </label>
+        </div>
+      </div>
+      <button id="tts-generate">Generate</button>
+      <div id="tts-loading" class="loading" hidden>Generating speech...</div>
+      <div id="tts-error" class="tts-error" hidden></div>
+      <div id="tts-result" hidden>
+        <audio id="tts-audio" controls preload="none"></audio>
+        <a id="tts-download" download="speech.wav">Download WAV</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sync Status Tab -->
+  <section id="tab-sync" class="tab-content">
+    <div class="sync-container">
+      <h2>Sync Pipeline Status</h2>
+      <div id="sync-stats" class="sync-stats">
+        <div class="stat-card" data-status="pending"><div class="stat-value">-</div><div class="stat-label">Pending</div></div>
+        <div class="stat-card" data-status="downloaded"><div class="stat-value">-</div><div class="stat-label">Downloaded</div></div>
+        <div class="stat-card" data-status="transcribed"><div class="stat-value">-</div><div class="stat-label">Transcribed</div></div>
+        <div class="stat-card" data-status="error"><div class="stat-value">-</div><div class="stat-label">Errors</div></div>
+      </div>
+      <div class="sync-total">Total recordings: <span id="sync-total">-</span></div>
+    </div>
+  </section>
+
+  <!-- Models Tab -->
+  <section id="tab-models" class="tab-content">
+    <div class="models-container">
+      <h2>Whisper Models</h2>
+      <div id="active-models" class="active-models">
+        <h3>Active Models</h3>
+        <div id="active-models-list">Loading...</div>
+      </div>
+      <div id="available-models" class="available-models">
+        <h3>Available Models</h3>
+        <div id="models-grid" class="models-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
