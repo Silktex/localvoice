@@ -49,16 +49,48 @@ const RECORDINGS_DIR = process.env.RECORDINGS_DIR ?? "/data/recordings";
 let localDb: Database | null = null;
 function getLocalDb(): Database | null {
   if (localDb) return localDb;
-  if (!existsSync(DB_PATH)) return null;
-  localDb = new Database(DB_PATH, { readonly: true });
+  try {
+    localDb = new Database(DB_PATH, { readonly: true });
+  } catch {
+    return null;
+  }
   return localDb;
 }
 
 const LOCALVOICE = {
   stt: process.env.LOCALVOICE_STT_URL ?? "http://localhost:8080",
   piper: process.env.LOCALVOICE_PIPER_URL ?? "http://localhost:8000",
-  parler: process.env.LOCALVOICE_PARLER_URL ?? "http://localhost:8001",
+  kokoro: process.env.LOCALVOICE_KOKORO_URL ?? "http://localhost:8880",
+  diarization: process.env.LOCALVOICE_DIAR_URL ?? "http://localhost:8090",
 };
+
+const VOICE_PREFIX_LABELS: Record<string, string> = {
+  af: "American Female", am: "American Male",
+  bf: "British Female", bm: "British Male",
+  ef: "European Female", em: "European Male",
+  ff: "French Female", hf: "Hindi Female", hm: "Hindi Male",
+  if: "Italian Female", im: "Italian Male",
+  jf: "Japanese Female", jm: "Japanese Male",
+  pf: "Portuguese Female", pm: "Portuguese Male",
+  zf: "Chinese Female", zm: "Chinese Male",
+};
+
+const RETRANSCRIBE_RESET =
+  "UPDATE recordings SET sync_status='downloaded', local_transcription=NULL, segments_json=NULL, " +
+  "local_language=NULL, local_duration=NULL, local_transcribed_at=NULL, local_model=NULL, " +
+  "updated_at=datetime('now')";
+
+// Write-capable DB handle for mutation endpoints
+let writeDb: Database | null = null;
+function getWriteDb(): Database | null {
+  if (writeDb) return writeDb;
+  try {
+    writeDb = new Database(DB_PATH);
+  } catch {
+    return null;
+  }
+  return writeDb;
+}
 
 // ── Token Management ───────────────────────────────────────────────
 
@@ -205,42 +237,59 @@ async function handleSTT(req: Request): Promise<Response> {
 }
 
 async function handleTTS(req: Request): Promise<Response> {
-  const body = (await req.json()) as { text: string; engine?: string; description?: string };
-  const engine = body.engine ?? "piper";
-  const baseUrl = engine === "parler" ? LOCALVOICE.parler : LOCALVOICE.piper;
-  const engineLabel = engine === "parler" ? "Parler" : "Piper";
+  const body = (await req.json()) as { text: string; engine?: string; voice?: string; description?: string };
+  const engine = body.engine ?? "kokoro";
 
+  if (engine === "kokoro") {
+    try {
+      const resp = await fetch(`${LOCALVOICE.kokoro}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "kokoro",
+          input: body.text,
+          voice: body.voice || "af_heart",
+          response_format: "wav",
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        return Response.json({ error: err || `Kokoro TTS returned ${resp.status}` }, { status: resp.status });
+      }
+      return new Response(resp.body, {
+        headers: {
+          "Content-Type": "audio/wav",
+          "Content-Disposition": 'attachment; filename="speech.wav"',
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("ECONNREFUSED") || msg.includes("fetch failed")) {
+        return Response.json({ error: "Kokoro TTS service is not running." }, { status: 503 });
+      }
+      return Response.json({ error: `Kokoro TTS unavailable: ${msg}` }, { status: 503 });
+    }
+  }
+
+  // Fallback to Piper
   const ttsBody: Record<string, string> = { text: body.text };
-  if (body.description) ttsBody.description = body.description;
-
   let resp: Response;
   try {
-    resp = await fetch(`${baseUrl}/tts`, {
+    resp = await fetch(`${LOCALVOICE.piper}/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(ttsBody),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("ECONNREFUSED") || msg.includes("ConnectionRefused") || msg.includes("fetch failed") || msg.includes("Unable to connect")) {
-      return Response.json(
-        { error: `${engineLabel} TTS service is not running. Start it with: docker compose --profile quality-tts up -d` },
-        { status: 503 },
-      );
-    }
-    return Response.json({ error: `${engineLabel} TTS service unavailable: ${msg}` }, { status: 503 });
+    return Response.json({ error: `Piper TTS unavailable: ${msg}` }, { status: 503 });
   }
-
   if (!resp.ok) {
     const err = await resp.text();
-    return Response.json({ error: err || `${engineLabel} TTS returned ${resp.status}` }, { status: resp.status });
+    return Response.json({ error: err || `Piper TTS returned ${resp.status}` }, { status: resp.status });
   }
-
   return new Response(resp.body, {
-    headers: {
-      "Content-Type": "audio/wav",
-      "Content-Disposition": 'attachment; filename="speech.wav"',
-    },
+    headers: { "Content-Type": "audio/wav", "Content-Disposition": 'attachment; filename="speech.wav"' },
   });
 }
 
@@ -249,7 +298,8 @@ async function handleHealth(): Promise<Response> {
     { name: "3cx", check: () => checkThreeCX() },
     { name: "whisper", check: () => checkService(LOCALVOICE.stt) },
     { name: "piper", check: () => checkService(LOCALVOICE.piper) },
-    { name: "parler", check: () => checkService(LOCALVOICE.parler) },
+    { name: "kokoro", check: () => checkService(LOCALVOICE.kokoro) },
+    { name: "diarization", check: () => checkService(LOCALVOICE.diarization) },
   ];
 
   const results = await Promise.all(
@@ -339,6 +389,13 @@ interface Segment {
 }
 
 function assignSpeakers(segments: Segment[], fromName: string | null, toName: string | null): Segment[] {
+  // If segments already have real speaker labels from diarization, use them
+  const hasRealSpeakers = segments.some(
+    (s) => s.speaker && s.speaker !== "Caller" && s.speaker !== "Called" && !s.speaker.startsWith("SPEAKER_")
+  );
+  if (hasRealSpeakers) return segments;
+
+  // Fallback: gap-based heuristic
   const caller = fromName || "Caller";
   const called = toName || "Called";
   let currentSpeaker = caller;
@@ -483,8 +540,147 @@ Bun.serve({
         return await handleSyncStatus();
       }
 
+      if (path === "/api/sync/schedule" && req.method === "GET") {
+        const interval = Number(process.env.SYNC_INTERVAL_MINUTES ?? "15");
+        return Response.json({ interval_minutes: interval });
+      }
+
       if (path === "/api/sync/trigger" && req.method === "POST") {
         return Response.json({ message: "Manual sync trigger not yet implemented" }, { status: 501 });
+      }
+
+      // Sync recordings list (clickable stat cards)
+      if (path === "/api/sync/recordings" && req.method === "GET") {
+        const db = getLocalDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const status = url.searchParams.get("status") ?? "pending";
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        const rows = db.query(
+          "SELECT id, start_time, from_display_name, to_display_name, call_type, duration, local_transcription " +
+          "FROM recordings WHERE sync_status = ? ORDER BY id DESC LIMIT ? OFFSET ?"
+        ).all(status, limit, offset);
+        const total = db.query("SELECT COUNT(*) as count FROM recordings WHERE sync_status = ?").get(status) as {count: number};
+        return Response.json({ recordings: rows, total: total.count });
+      }
+
+      // Retranscribe single recording
+      const retranscribeMatch = path.match(/^\/api\/recordings\/(\d+)\/retranscribe$/);
+      if (retranscribeMatch && req.method === "POST") {
+        const db = getWriteDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const id = parseInt(retranscribeMatch[1], 10);
+        db.run(`${RETRANSCRIBE_RESET} WHERE id=?`, [id]);
+        return Response.json({ success: true, id });
+      }
+
+      // Retransliterate single recording
+      const retransMatch = path.match(/^\/api\/recordings\/(\d+)\/retransliterate$/);
+      if (retransMatch && req.method === "POST") {
+        const db = getWriteDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const id = parseInt(retransMatch[1], 10);
+        const row = db.query("SELECT local_transcription, segments_json FROM recordings WHERE id=?").get(id) as any;
+        if (!row?.local_transcription) return Response.json({ error: "No transcription to transliterate" }, { status: 404 });
+
+        const input = JSON.stringify({ text: row.local_transcription, segments: row.segments_json ? JSON.parse(row.segments_json) : [] });
+        const proc = Bun.spawn(["python3", join(import.meta.dir, "transliterate.py")], { stdin: new Blob([input]) });
+        const output = await new Response(proc.stdout).text();
+        const result = JSON.parse(output);
+
+        db.run(
+          "UPDATE recordings SET local_transcription=?, segments_json=?, updated_at=datetime('now') WHERE id=?",
+          [result.text, JSON.stringify(result.segments), id]
+        );
+        return Response.json({ success: true, id, text: result.text });
+      }
+
+      // Bulk actions
+      if (path === "/api/recordings/bulk-action" && req.method === "POST") {
+        const body = await req.json() as { action: string; ids?: number[]; filter?: { status: string } };
+        const db = getWriteDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+
+        if (body.action === "retranscribe") {
+          if (body.ids) {
+            const placeholders = body.ids.map(() => "?").join(",");
+            db.run(`${RETRANSCRIBE_RESET} WHERE id IN (${placeholders})`, body.ids);
+            return Response.json({ success: true, count: body.ids.length });
+          }
+          if (body.filter?.status) {
+            const result = db.run(`${RETRANSCRIBE_RESET} WHERE sync_status=?`, [body.filter.status]);
+            return Response.json({ success: true, count: result.changes });
+          }
+        }
+        return Response.json({ error: "Invalid action" }, { status: 400 });
+      }
+
+      // Speaker management — proxy to diarization service
+      if (path === "/api/speakers" && req.method === "GET") {
+        try {
+          const resp = await fetch(`${LOCALVOICE.diarization}/speakers`, { signal: AbortSignal.timeout(5000) });
+          return Response.json(await resp.json(), { status: resp.status });
+        } catch {
+          return Response.json({ speakers: [], error: "Diarization service unavailable" });
+        }
+      }
+
+      if (path === "/api/speakers/enroll" && req.method === "POST") {
+        const formData = await req.formData();
+        const resp = await fetch(`${LOCALVOICE.diarization}/enroll`, {
+          method: "POST",
+          body: formData,
+        });
+        return Response.json(await resp.json(), { status: resp.status });
+      }
+
+      const speakerDeleteMatch = path.match(/^\/api\/speakers\/([^/]+)$/);
+      if (speakerDeleteMatch && req.method === "DELETE") {
+        const resp = await fetch(`${LOCALVOICE.diarization}/speakers/${speakerDeleteMatch[1]}`, {
+          method: "DELETE",
+        });
+        return Response.json(await resp.json(), { status: resp.status });
+      }
+
+      // Re-diarize a recording
+      const rediarizeMatch = path.match(/^\/api\/recordings\/(\d+)\/rediarize$/);
+      if (rediarizeMatch && req.method === "POST") {
+        const db = getWriteDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const id = parseInt(rediarizeMatch[1], 10);
+        db.run(
+          "UPDATE recordings SET sync_status_diar='pending', diarization_json=NULL, speaker_map_json=NULL, " +
+          "diarized_at=NULL, updated_at=datetime('now') WHERE id=?", [id]
+        );
+        return Response.json({ success: true, id });
+      }
+
+      // TTS voices
+      if (path === "/api/tts/voices" && req.method === "GET") {
+        try {
+          const resp = await fetch(`${LOCALVOICE.kokoro}/v1/audio/voices`, { signal: AbortSignal.timeout(5000) });
+          if (resp.ok) {
+            const data = await resp.json() as { voices?: string[] } | string[];
+            const voiceIds = Array.isArray(data) ? data : (data.voices || []);
+            const voices = voiceIds.map((id: string) => {
+              const prefix = id.substring(0, 2);
+              const name = id.substring(3).replace(/_/g, " ").replace(/^v\d+/, "").trim();
+              const label = VOICE_PREFIX_LABELS[prefix] || prefix.toUpperCase();
+              const displayName = name ? `${name.charAt(0).toUpperCase() + name.slice(1)} (${label})` : `${id} (${label})`;
+              return { id, name: displayName, group: label };
+            });
+            return Response.json(voices);
+          }
+        } catch {}
+        return Response.json([
+          { id: "af_heart", name: "Heart (American Female)", group: "American Female" },
+          { id: "af_bella", name: "Bella (American Female)", group: "American Female" },
+          { id: "af_sarah", name: "Sarah (American Female)", group: "American Female" },
+          { id: "am_adam", name: "Adam (American Male)", group: "American Male" },
+          { id: "am_michael", name: "Michael (American Male)", group: "American Male" },
+          { id: "bf_emma", name: "Emma (British Female)", group: "British Female" },
+          { id: "bm_george", name: "George (British Male)", group: "British Male" },
+        ]);
       }
 
       if (path === "/api/models" && req.method === "GET") {

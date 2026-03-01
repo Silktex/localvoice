@@ -13,7 +13,8 @@
       <span class="health-dot" data-service="3cx" title="3CX">3CX</span>
       <span class="health-dot" data-service="whisper" title="Whisper STT">STT</span>
       <span class="health-dot" data-service="piper" title="Piper TTS">Piper</span>
-      <span class="health-dot" data-service="parler" title="Parler TTS">Parler</span>
+      <span class="health-dot" data-service="kokoro" title="Kokoro TTS">Kokoro</span>
+      <span class="health-dot" data-service="diarization" title="Speaker Diarization">Diar</span>
     </div>
   </header>
 
@@ -21,6 +22,7 @@
     <button class="tab active" data-tab="recordings">Recordings</button>
     <button class="tab" data-tab="stt">Speech-to-Text</button>
     <button class="tab" data-tab="tts">Text-to-Speech</button>
+    <button class="tab" data-tab="speakers">Speakers</button>
     <button class="tab" data-tab="sync">Sync Status</button>
     <button class="tab" data-tab="models">Models</button>
   </nav>
@@ -89,9 +91,14 @@
         </label>
         <label>Model:
           <select id="stt-model">
-            <option value="medium">Medium (multilingual)</option>
-            <option value="small.en">Small.en (English)</option>
+            <option value="">Loading models...</option>
           </select>
+        </label>
+        <label>
+          <input type="checkbox" id="stt-translate"> Translate to English
+        </label>
+        <label>
+          <input type="checkbox" id="stt-transliterate"> Transliterate Hindi
         </label>
         <button id="stt-transcribe" disabled>Transcribe</button>
       </div>
@@ -112,12 +119,14 @@
       <div class="tts-options">
         <fieldset>
           <legend>Engine</legend>
-          <label><input type="radio" name="tts-engine" value="piper" checked> Piper (fast)</label>
-          <label><input type="radio" name="tts-engine" value="parler"> Parler (quality)</label>
+          <label><input type="radio" name="tts-engine" value="kokoro" checked> Kokoro (Natural)</label>
+          <label><input type="radio" name="tts-engine" value="piper"> Piper (Fast)</label>
         </fieldset>
-        <div id="parler-desc-group" hidden>
-          <label>Voice description:
-            <input type="text" id="tts-description" placeholder="A calm female speaker with clear enunciation">
+        <div id="kokoro-voice-group">
+          <label>Voice:
+            <select id="tts-voice">
+              <option value="af_heart">Heart (Female)</option>
+            </select>
           </label>
         </div>
       </div>
@@ -131,15 +140,70 @@
     </div>
   </section>
 
+  <!-- Speakers Tab -->
+  <section id="tab-speakers" class="tab-content">
+    <div class="speakers-container">
+      <h2>Voice Profiles</h2>
+
+      <div class="enroll-section">
+        <h3>Enroll New Speaker</h3>
+        <div class="enroll-form">
+          <div class="enroll-fields">
+            <label>Name: <input type="text" id="enroll-name" placeholder="e.g. John Smith"></label>
+            <label>Description: <input type="text" id="enroll-desc" placeholder="Optional"></label>
+          </div>
+          <div id="enroll-drop-zone" class="drop-zone">
+            <p>Drag &amp; drop a voice sample (5-30s of speech), or click to select</p>
+            <input type="file" id="enroll-file" accept="audio/*" hidden>
+          </div>
+          <div id="enroll-file-info" hidden>
+            <span id="enroll-filename"></span>
+            <button id="enroll-clear">Clear</button>
+          </div>
+          <button id="enroll-submit" disabled>Enroll Speaker</button>
+          <div id="enroll-loading" class="loading" hidden>Enrolling speaker...</div>
+          <div id="enroll-result" hidden></div>
+        </div>
+      </div>
+
+      <div class="enrolled-section">
+        <h3>Enrolled Speakers</h3>
+        <div id="speakers-list">Loading...</div>
+      </div>
+    </div>
+  </section>
+
   <!-- Sync Status Tab -->
   <section id="tab-sync" class="tab-content">
     <div class="sync-container">
       <h2>Sync Pipeline Status</h2>
+      <div class="sync-timer">
+        <span class="sync-timer-label">Next sync in:</span>
+        <span id="sync-countdown" class="sync-countdown">--:--</span>
+      </div>
       <div id="sync-stats" class="sync-stats">
         <div class="stat-card" data-status="pending"><div class="stat-value">-</div><div class="stat-label">Pending</div></div>
         <div class="stat-card" data-status="downloaded"><div class="stat-value">-</div><div class="stat-label">Downloaded</div></div>
         <div class="stat-card" data-status="transcribed"><div class="stat-value">-</div><div class="stat-label">Transcribed</div></div>
         <div class="stat-card" data-status="error"><div class="stat-value">-</div><div class="stat-label">Errors</div></div>
+      </div>
+      <div id="sync-recordings-panel" class="sync-recordings-panel" hidden>
+        <div class="sync-recordings-header">
+          <h3 id="sync-recordings-title">Recordings</h3>
+          <div class="sync-recordings-actions">
+            <button id="sync-bulk-retranscribe" class="btn-sm">Retranscribe All</button>
+            <button id="sync-panel-close" class="btn-sm btn-ghost">Close</button>
+          </div>
+        </div>
+        <table class="sync-recordings-table">
+          <thead><tr><th>ID</th><th>Date</th><th>Caller</th><th>Called</th><th>Type</th><th>Actions</th></tr></thead>
+          <tbody id="sync-recordings-body"></tbody>
+        </table>
+        <div class="sync-recordings-pagination">
+          <button id="sync-rec-prev" disabled>Prev</button>
+          <span id="sync-rec-page-info">Page 1</span>
+          <button id="sync-rec-next">Next</button>
+        </div>
       </div>
       <div class="sync-total">Total recordings: <span id="sync-total">-</span></div>
     </div>

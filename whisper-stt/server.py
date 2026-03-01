@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 import httpx
+from aksharamukha import transliterate as aksha
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -71,6 +72,13 @@ def pcm_to_wav(
         data_size,
     )
     return header + pcm_data
+
+
+def transliterate_text(text):
+    """Convert Devanagari characters to readable Latin script."""
+    if not text or not any('\u0900' <= c <= '\u097F' for c in text):
+        return text
+    return aksha.process('Devanagari', 'RomanColloquial', text)
 
 
 def _route_model(model: str) -> tuple[httpx.AsyncClient, str]:
@@ -220,6 +228,8 @@ async def transcribe_audio(
     model: str = Form(default="whisper-1"),
     language: Optional[str] = Form(default=None),
     response_format: str = Form(default="json"),
+    translate: Optional[str] = Form(default=None),
+    transliterate: Optional[str] = Form(default=None),
 ):
     try:
         client, url = _route_model(model)
@@ -230,6 +240,8 @@ async def transcribe_audio(
         params = {"response_format": response_format}
         if language:
             params["language"] = language
+        if translate:
+            params["translate"] = translate
 
         backend_resp = await _call_backend(client, url, audio_data, filename, media_type, params)
 
@@ -239,12 +251,31 @@ async def transcribe_audio(
                 text = payload.get("text", "")
             except Exception:
                 text = backend_resp.text
+            if transliterate:
+                text = transliterate_text(text)
             return Response(
                 content=json.dumps({"text": text}),
                 media_type="application/json",
             )
 
-        return Response(content=backend_resp.text, media_type="text/plain")
+        if response_format == "verbose_json":
+            try:
+                payload = backend_resp.json()
+            except Exception:
+                payload = {"text": backend_resp.text}
+            if transliterate:
+                payload["text"] = transliterate_text(payload.get("text", ""))
+                for seg in payload.get("segments", []):
+                    seg["text"] = transliterate_text(seg.get("text", ""))
+            return Response(
+                content=json.dumps(payload),
+                media_type="application/json",
+            )
+
+        text = backend_resp.text
+        if transliterate:
+            text = transliterate_text(text)
+        return Response(content=text, media_type="text/plain")
 
     except HTTPException:
         raise
@@ -255,7 +286,9 @@ async def transcribe_audio(
 
 @app.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe(
-    file: UploadFile = File(...), language: Optional[str] = Form(default=None)
+    file: UploadFile = File(...), language: Optional[str] = Form(default=None),
+    translate: Optional[str] = Form(default=None),
+    transliterate: Optional[str] = Form(default=None),
 ):
     try:
         audio_data = await file.read()
@@ -265,6 +298,8 @@ async def transcribe(
         params = {"response_format": "verbose_json"}
         if language:
             params["language"] = language
+        if translate:
+            params["translate"] = translate
 
         # Default backend for legacy /transcribe endpoint
         if backend_client is None:
@@ -284,8 +319,12 @@ async def transcribe(
         except Exception:
             payload = {"text": backend_resp.text}
 
+        text = payload.get("text", "")
+        if transliterate:
+            text = transliterate_text(text)
+
         return TranscribeResponse(
-            text=payload.get("text", ""),
+            text=text,
             language=payload.get("language"),
             duration=payload.get("duration"),
         )

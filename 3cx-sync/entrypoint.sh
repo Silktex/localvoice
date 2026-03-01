@@ -6,7 +6,7 @@ mkdir -p /data/recordings
 
 # Configure cron schedule from env var
 SCHEDULE="${SYNC_CRON_SCHEDULE:-*/15 * * * *}"
-echo "$SCHEDULE /app/sync-recordings >> /var/log/sync.log 2>&1" | crontab -
+printf "PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n$SCHEDULE /app/sync-recordings >> /var/log/sync.log 2>&1\n" | crontab -
 
 # Create log file
 touch /var/log/sync.log

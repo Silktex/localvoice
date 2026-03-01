@@ -11,8 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
-from indic_transliteration import sanscript
-from indic_transliteration.sanscript import transliterate
+from aksharamukha import transliterate as aksha
 
 # -- Auth (env-var based for Docker) -------------------------------------------
 
@@ -106,6 +105,10 @@ def init_db():
         "ALTER TABLE recordings ADD COLUMN call_type TEXT",
         "ALTER TABLE recordings ADD COLUMN segments_json TEXT",
         "ALTER TABLE recordings ADD COLUMN local_model TEXT",
+        "ALTER TABLE recordings ADD COLUMN diarization_json TEXT",
+        "ALTER TABLE recordings ADD COLUMN speaker_map_json TEXT",
+        "ALTER TABLE recordings ADD COLUMN diarized_at TEXT",
+        "ALTER TABLE recordings ADD COLUMN sync_status_diar TEXT DEFAULT 'pending'",
     ]
     for sql in migrations:
         try:
@@ -118,10 +121,22 @@ def init_db():
 # -- Transliteration (Devanagari -> Latin) -------------------------------------
 
 def transliterate_text(text):
-    """Convert any Devanagari characters in text to Latin script (ITRANS)."""
+    """Convert any Devanagari characters in text to readable Latin script."""
     if not text or not any('\u0900' <= c <= '\u097F' for c in text):
         return text  # No Devanagari, skip
-    return transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS)
+    return aksha.process('Devanagari', 'RomanColloquial', text)
+
+def resolve_audio_file(opus_path, wav_path):
+    """Return (abs_path, mime_type) preferring opus over WAV, or (None, None)."""
+    if opus_path:
+        p = os.path.join(RECORDINGS_DIR, opus_path)
+        if os.path.exists(p):
+            return p, "audio/ogg"
+    if wav_path:
+        p = os.path.join(RECORDINGS_DIR, wav_path)
+        if os.path.exists(p):
+            return p, "audio/wav"
+    return None, None
 
 # -- Phase 1: Fetch Metadata ---------------------------------------------------
 
@@ -292,7 +307,9 @@ def _convert_single(rec_id, wav_path):
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg exit {result.returncode}: {result.stderr.strip()[:200]}")
 
-    return (rec_id, opus_filename, os.path.getsize(abs_opus), os.path.getsize(abs_wav))
+    wav_size = os.path.getsize(abs_wav)
+    os.remove(abs_wav)
+    return (rec_id, opus_filename, os.path.getsize(abs_opus), wav_size)
 
 def convert_to_opus(db, max_workers=4):
     print("\n[3/4] Converting WAVs to Opus...")
@@ -341,7 +358,7 @@ LOCALVOICE_API = f"{LOCALVOICE_STT_URL}/v1/audio/transcriptions"
 def transcribe_recordings(db):
     print("\n[4/4] Transcribing recordings via Whisper API...")
     rows = db.execute(
-        "SELECT id, wav_path FROM recordings WHERE sync_status = 'downloaded' ORDER BY id"
+        "SELECT id, wav_path, opus_path, call_type FROM recordings WHERE sync_status = 'downloaded' ORDER BY id"
     ).fetchall()
 
     if not rows:
@@ -351,34 +368,37 @@ def transcribe_recordings(db):
     print(f"  {len(rows)} recordings to transcribe")
     transcribed = 0
 
-    for i, (rec_id, wav_path) in enumerate(rows, 1):
-        abs_wav = os.path.join(RECORDINGS_DIR, wav_path)
+    for i, (rec_id, wav_path, opus_path, call_type_val) in enumerate(rows, 1):
+        audio_file, audio_mime = resolve_audio_file(opus_path, wav_path)
 
-        if not os.path.exists(abs_wav):
+        if not audio_file:
             db.execute(
-                "UPDATE recordings SET sync_status='error', error_message='WAV file missing', "
+                "UPDATE recordings SET sync_status='error', error_message='No audio file found', "
                 "updated_at=datetime('now') WHERE id=?",
                 (rec_id,)
             )
             db.commit()
-            print(f"  [{i}/{len(rows)}] ERROR: WAV missing for recording {rec_id}", file=sys.stderr)
+            print(f"  [{i}/{len(rows)}] ERROR: No audio for recording {rec_id}", file=sys.stderr)
             continue
 
         try:
-            with open(abs_wav, "rb") as f:
+            with open(audio_file, "rb") as f:
                 # Determine model based on call_type
-                call_type = db.execute("SELECT call_type FROM recordings WHERE id=?", (rec_id,)).fetchone()
-                call_type_str = (call_type[0] or "") if call_type else ""
+                call_type_str = call_type_val or ""
                 if "Internal" in call_type_str or "Local" in call_type_str:
-                    model_name = "medium"
+                    model_name = "large-v3"
                 else:
                     model_name = "small.en"
 
+                form_data = {"model": model_name, "response_format": "verbose_json"}
+                if model_name != "small.en":
+                    form_data["language"] = "hi"
+
                 resp = requests.post(
                     LOCALVOICE_API,
-                    files={"file": (os.path.basename(abs_wav), f, "audio/wav")},
-                    data={"model": model_name, "response_format": "verbose_json"},
-                    timeout=300
+                    files={"file": (os.path.basename(audio_file), f, audio_mime)},
+                    data=form_data,
+                    timeout=600
                 )
             resp.raise_for_status()
             data = resp.json()
@@ -411,7 +431,7 @@ def transcribe_recordings(db):
 
         except requests.Timeout:
             db.execute(
-                "UPDATE recordings SET sync_status='error', error_message='Transcription timed out (5min)', "
+                "UPDATE recordings SET sync_status='error', error_message='Transcription timed out', "
                 "updated_at=datetime('now') WHERE id=?",
                 (rec_id,)
             )
@@ -430,6 +450,111 @@ def transcribe_recordings(db):
     print(f"  Done: {transcribed}/{len(rows)} transcribed successfully")
     return transcribed
 
+# -- Phase 5: Diarize and Identify Speakers ------------------------------------
+
+LOCALVOICE_DIAR_URL = os.environ.get("LOCALVOICE_DIAR_URL", "http://diarization:8090")
+
+def merge_diarization_with_transcription(whisper_segments, diar_segments, speaker_map):
+    """Assign speaker labels to Whisper transcription segments based on diarization overlap."""
+    for w_seg in whisper_segments:
+        w_start = w_seg.get("start", 0)
+        w_end = w_seg.get("end", 0)
+
+        best_speaker = None
+        best_overlap = 0
+
+        for d_seg in diar_segments:
+            d_start = d_seg.get("start", 0)
+            d_end = d_seg.get("end", 0)
+            overlap = max(0, min(w_end, d_end) - max(w_start, d_start))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = d_seg.get("speaker_label", d_seg.get("speaker"))
+
+        if best_speaker and best_speaker in speaker_map:
+            info = speaker_map[best_speaker]
+            name = info.get("name") if isinstance(info, dict) else None
+            w_seg["speaker"] = name if name else best_speaker
+        elif best_speaker:
+            w_seg["speaker"] = best_speaker
+
+    return whisper_segments
+
+def diarize_recordings(db):
+    print("\n[5/5] Diarizing recordings...")
+    rows = db.execute(
+        "SELECT id, opus_path, wav_path, call_type FROM recordings "
+        "WHERE sync_status = 'transcribed' AND (sync_status_diar = 'pending' OR sync_status_diar IS NULL) "
+        "ORDER BY id"
+    ).fetchall()
+
+    if not rows:
+        print("  No recordings to diarize")
+        return 0
+
+    print(f"  {len(rows)} recordings to diarize")
+    diarized = 0
+
+    for i, (rec_id, opus_path, wav_path, call_type) in enumerate(rows, 1):
+        audio_file, audio_mime = resolve_audio_file(opus_path, wav_path)
+
+        if not audio_file:
+            continue
+
+        try:
+            with open(audio_file, "rb") as f:
+                resp = requests.post(
+                    f"{LOCALVOICE_DIAR_URL}/diarize-and-identify",
+                    files={"file": (os.path.basename(audio_file), f, audio_mime)},
+                    data={"num_speakers": "2"},
+                    timeout=600
+                )
+            resp.raise_for_status()
+            data = resp.json()
+
+            db.execute(
+                "UPDATE recordings SET diarization_json=?, speaker_map_json=?, "
+                "diarized_at=datetime('now'), sync_status_diar='diarized', "
+                "updated_at=datetime('now') WHERE id=?",
+                (
+                    json.dumps(data.get("segments", [])),
+                    json.dumps(data.get("speakers", {})),
+                    rec_id
+                )
+            )
+
+            # Merge speaker names into existing transcription segments
+            existing_segments = db.execute(
+                "SELECT segments_json FROM recordings WHERE id=?", (rec_id,)
+            ).fetchone()
+            if existing_segments and existing_segments[0]:
+                segments = json.loads(existing_segments[0])
+                segments = merge_diarization_with_transcription(
+                    segments, data.get("segments", []), data.get("speakers", {})
+                )
+                db.execute(
+                    "UPDATE recordings SET segments_json=?, updated_at=datetime('now') WHERE id=?",
+                    (json.dumps(segments), rec_id)
+                )
+
+            db.commit()
+            diarized += 1
+            speakers_info = data.get("speakers", {})
+            names = [v.get("name", "?") for v in speakers_info.values() if isinstance(v, dict)]
+            print(f"  [{i}/{len(rows)}] Diarized recording {rec_id}: {len(data.get('segments', []))} segments, speakers: {names}")
+
+        except Exception as e:
+            db.execute(
+                "UPDATE recordings SET sync_status_diar='error', "
+                "updated_at=datetime('now') WHERE id=?",
+                (rec_id,)
+            )
+            db.commit()
+            print(f"  [{i}/{len(rows)}] ERROR diarizing recording {rec_id}: {e}", file=sys.stderr)
+
+    print(f"  Done: {diarized}/{len(rows)} diarized successfully")
+    return diarized
+
 # -- Main ----------------------------------------------------------------------
 
 def main():
@@ -442,6 +567,18 @@ def main():
         download_recordings(config, db)
         convert_to_opus(db)
         transcribe_recordings(db)
+
+        # Phase 5: Diarize (optional — only if diarization service is available)
+        try:
+            diar_health = requests.get(f"{LOCALVOICE_DIAR_URL}/health", timeout=5)
+            if diar_health.ok and diar_health.json().get("status") == "healthy":
+                diarize_recordings(db)
+            else:
+                print("\n[5/5] Diarization service not healthy, skipping")
+        except requests.ConnectionError:
+            print("\n[5/5] Diarization service not available, skipping")
+        except Exception as e:
+            print(f"\n[5/5] Diarization check failed: {e}, skipping")
 
         # Summary
         print("\n-- Summary --")

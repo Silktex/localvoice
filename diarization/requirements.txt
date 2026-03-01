@@ -1,0 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/rocm6.2.4
+torch==2.6.0+rocm6.2.4
+torchaudio==2.6.0+rocm6.2.4
+# Note: ROCm GPU support requires /dev/kfd + /dev/dri device access
+# and HSA_OVERRIDE_GFX_VERSION=9.0.0 for AMD iGPU (gfx90c)
+# Set DEVICE=cuda to enable GPU, defaults to cpu
+huggingface-hub<1.0
+pyannote.audio>=3.3
+speechbrain>=1.0
+fastapi>=0.109
+uvicorn>=0.27
+python-multipart
+requests
+numpy
+scipy
+soundfile

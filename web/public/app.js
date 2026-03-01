@@ -18,6 +18,11 @@
       document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
       tab.classList.add("active");
       document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+
+      // Trigger data loads on tab switch
+      if (tab.dataset.tab === "stt") populateSttModels();
+      if (tab.dataset.tab === "speakers") loadSpeakers();
+      if (tab.dataset.tab === "sync") { loadSyncStatus(); initSyncCountdown(); }
     });
   });
 
@@ -34,15 +39,14 @@
         }
 
         // Disable TTS engine radio buttons for unavailable services
-        if (svc.name === "piper" || svc.name === "parler") {
+        if (svc.name === "piper" || svc.name === "kokoro") {
           const radio = document.querySelector(`input[name="tts-engine"][value="${svc.name}"]`);
           if (radio) {
             const label = radio.parentElement;
             if (svc.status !== "healthy") {
               radio.disabled = true;
               label.classList.add("engine-unavailable");
-              label.title = `${svc.name === "parler" ? "Parler" : "Piper"} TTS service is not running`;
-              // If this engine was selected, switch to the other one
+              label.title = `${svc.name === "kokoro" ? "Kokoro" : "Piper"} TTS service is not running`;
               if (radio.checked) {
                 const other = document.querySelector(`input[name="tts-engine"]:not([value="${svc.name}"])`);
                 if (other && !other.disabled) {
@@ -217,11 +221,15 @@
   }
 
   function renderSegments(segments, fromName, toName) {
+    const speakerSet = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
+    const speakerColors = ["caller", "called", "speaker-c", "speaker-d"];
+
     const html = segments.map((seg) => {
       const mm = Math.floor(seg.start / 60);
       const ss = Math.floor(seg.start % 60);
       const timeStr = `${mm}:${ss.toString().padStart(2, "0")}`;
-      const speakerClass = seg.speaker === fromName ? "caller" : "called";
+      const speakerIdx = speakerSet.indexOf(seg.speaker);
+      const speakerClass = speakerColors[speakerIdx] || "caller";
       const speakerShort = seg.speaker ? esc(seg.speaker.split(":")[0]) : "";
 
       return `<div class="segment">
@@ -260,6 +268,8 @@
   const sttClear = document.getElementById("stt-clear");
   const sttLanguage = document.getElementById("stt-language");
   const sttModel = document.getElementById("stt-model");
+  const sttTranslateEl = document.getElementById("stt-translate");
+  const sttTransliterateEl = document.getElementById("stt-transliterate");
   const sttTranscribe = document.getElementById("stt-transcribe");
   const sttLoading = document.getElementById("stt-loading");
   const sttResult = document.getElementById("stt-result");
@@ -319,6 +329,8 @@
       formData.append("response_format", "json");
       const lang = sttLanguage.value;
       if (lang) formData.append("language", lang);
+      if (sttTranslateEl.checked) formData.append("translate", "true");
+      if (sttTransliterateEl.checked) formData.append("transliterate", "true");
 
       const resp = await fetch("/api/stt", { method: "POST", body: formData });
       const data = await resp.json();
@@ -341,34 +353,62 @@
     });
   });
 
+  // ── Dynamic STT Model Dropdown ────────────────────────────────────
+
+  async function populateSttModels() {
+    try {
+      const resp = await fetch("/api/models");
+      const data = await resp.json();
+      sttModel.innerHTML = "";
+      const active = data.active || [];
+
+      for (const m of active) {
+        const opt = document.createElement("option");
+        opt.value = m.model || m.name;
+        const label = m.model || m.name;
+        const isEn = label.includes(".en") || label.includes("english");
+        opt.textContent = label + (isEn ? " (English)" : " (Multilingual)");
+        sttModel.appendChild(opt);
+      }
+
+      if (active.length === 0) {
+        sttModel.innerHTML = '<option value="large-v3">large-v3 (Multilingual)</option><option value="small.en">small.en (English)</option>';
+      }
+    } catch {
+      sttModel.innerHTML = '<option value="large-v3">large-v3 (Multilingual)</option><option value="small.en">small.en (English)</option>';
+    }
+  }
+
+  populateSttModels();
+
   // ── TTS ────────────────────────────────────────────────────────────
 
-  const ttsText = document.getElementById("tts-text");
+  const ttsTextEl = document.getElementById("tts-text");
   const ttsGenerate = document.getElementById("tts-generate");
   const ttsLoading = document.getElementById("tts-loading");
   const ttsResult = document.getElementById("tts-result");
   const ttsAudio = document.getElementById("tts-audio");
   const ttsDownload = document.getElementById("tts-download");
-  const ttsDescription = document.getElementById("tts-description");
-  const parlerDescGroup = document.getElementById("parler-desc-group");
+  const ttsVoice = document.getElementById("tts-voice");
+  const kokoroVoiceGroup = document.getElementById("kokoro-voice-group");
 
-  // Show/hide parler description field
+  // Show/hide kokoro voice dropdown based on engine selection
   document.querySelectorAll('input[name="tts-engine"]').forEach((radio) => {
     radio.addEventListener("change", () => {
-      parlerDescGroup.hidden = radio.value !== "parler" || !radio.checked;
+      kokoroVoiceGroup.hidden = radio.value !== "kokoro" || !radio.checked;
     });
   });
 
   const ttsError = document.getElementById("tts-error");
 
   ttsGenerate.addEventListener("click", async () => {
-    const text = ttsText.value.trim();
+    const text = ttsTextEl.value.trim();
     if (!text) return;
 
     const engine = document.querySelector('input[name="tts-engine"]:checked').value;
     const body = { text, engine };
-    if (engine === "parler" && ttsDescription.value.trim()) {
-      body.description = ttsDescription.value.trim();
+    if (engine === "kokoro" && ttsVoice.value) {
+      body.voice = ttsVoice.value;
     }
 
     ttsGenerate.disabled = true;
@@ -410,7 +450,44 @@
     }
   });
 
+  // Populate Kokoro voices
+  async function populateTtsVoices() {
+    try {
+      const resp = await fetch("/api/tts/voices");
+      const voices = await resp.json();
+      if (!Array.isArray(voices) || voices.length === 0) return;
+      ttsVoice.innerHTML = "";
+      // Group by server-provided group label
+      const groups = {};
+      for (const v of voices) {
+        const id = v.id || v;
+        const name = v.name || id;
+        const groupLabel = v.group || id.substring(0, 2).toUpperCase();
+        if (!groups[groupLabel]) groups[groupLabel] = [];
+        groups[groupLabel].push({ id, name });
+      }
+      for (const [label, items] of Object.entries(groups)) {
+        const group = document.createElement("optgroup");
+        group.label = label;
+        for (const v of items) {
+          const opt = document.createElement("option");
+          opt.value = v.id;
+          opt.textContent = v.name;
+          group.appendChild(opt);
+        }
+        ttsVoice.appendChild(group);
+      }
+      ttsVoice.value = "af_heart";
+    } catch {}
+  }
+
+  populateTtsVoices();
+
   // ── Sync Status ──────────────────────────────────────────────────
+
+  let syncRecPage = 0;
+  let syncRecStatus = null;
+  const SYNC_REC_LIMIT = 50;
 
   async function loadSyncStatus() {
     try {
@@ -431,6 +508,322 @@
   }
   loadSyncStatus();
   setInterval(loadSyncStatus, 30000);
+
+  // ── Sync Countdown Timer ──────────────────────────────────────────
+
+  let syncIntervalMinutes = 15;
+  let countdownInterval = null;
+
+  async function initSyncCountdown() {
+    try {
+      const resp = await fetch("/api/sync/schedule");
+      const data = await resp.json();
+      if (data.interval_minutes) syncIntervalMinutes = data.interval_minutes;
+    } catch {}
+
+    if (countdownInterval) clearInterval(countdownInterval);
+    countdownInterval = setInterval(updateCountdown, 1000);
+    updateCountdown();
+  }
+
+  function updateCountdown() {
+    const now = Date.now();
+    const intervalMs = syncIntervalMinutes * 60 * 1000;
+    const nextSync = Math.ceil(now / intervalMs) * intervalMs;
+    const remaining = Math.max(0, nextSync - now);
+
+    const totalSec = Math.floor(remaining / 1000);
+    const mm = Math.floor(totalSec / 60);
+    const ss = totalSec % 60;
+
+    const el = document.getElementById("sync-countdown");
+    if (el) el.textContent = `${mm}:${ss.toString().padStart(2, "0")}`;
+
+    // When countdown reaches 0, refresh sync status
+    if (totalSec === 0) {
+      loadSyncStatus();
+    }
+  }
+
+  initSyncCountdown();
+
+  // ── Clickable Stat Cards ──────────────────────────────────────────
+
+  document.querySelectorAll(".stat-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const status = card.dataset.status;
+      // Toggle: if same card clicked, close panel
+      if (syncRecStatus === status) {
+        closeSyncRecPanel();
+        return;
+      }
+      // Highlight active card
+      document.querySelectorAll(".stat-card").forEach(c => c.classList.remove("active"));
+      card.classList.add("active");
+      syncRecStatus = status;
+      syncRecPage = 0;
+      loadSyncRecordings();
+    });
+  });
+
+  async function loadSyncRecordings() {
+    const panel = document.getElementById("sync-recordings-panel");
+    const body = document.getElementById("sync-recordings-body");
+    const title = document.getElementById("sync-recordings-title");
+    const pageInfoEl = document.getElementById("sync-rec-page-info");
+
+    panel.hidden = false;
+    title.textContent = `${syncRecStatus.charAt(0).toUpperCase() + syncRecStatus.slice(1)} Recordings`;
+    body.innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
+
+    try {
+      const offset = syncRecPage * SYNC_REC_LIMIT;
+      const resp = await fetch(`/api/sync/recordings?status=${encodeURIComponent(syncRecStatus)}&limit=${SYNC_REC_LIMIT}&offset=${offset}`);
+      const data = await resp.json();
+      const total = data.total || 0;
+      const recordings = data.recordings || [];
+
+      if (recordings.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No recordings</td></tr>';
+      } else {
+        body.innerHTML = recordings.map(r => `<tr>
+          <td>${esc(r.id)}</td>
+          <td>${formatDate(r.start_time)}</td>
+          <td>${esc(r.from_display_name || "")}</td>
+          <td>${esc(r.to_display_name || "")}</td>
+          <td>${esc(r.call_type || "")}</td>
+          <td>
+            <button class="btn-action" data-action="retranscribe" data-id="${r.id}">Retranscribe</button>
+            <button class="btn-action" data-action="retransliterate" data-id="${r.id}">Retransliterate</button>
+          </td>
+        </tr>`).join("");
+
+        // Attach action handlers
+        body.querySelectorAll(".btn-action").forEach(btn => {
+          btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            handleRecordingAction(btn.dataset.action, parseInt(btn.dataset.id, 10), btn);
+          });
+        });
+      }
+
+      const totalPages = Math.ceil(total / SYNC_REC_LIMIT);
+      pageInfoEl.textContent = `Page ${syncRecPage + 1} of ${totalPages || 1}`;
+      document.getElementById("sync-rec-prev").disabled = syncRecPage === 0;
+      document.getElementById("sync-rec-next").disabled = (syncRecPage + 1) >= totalPages;
+    } catch (err) {
+      body.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  function closeSyncRecPanel() {
+    document.getElementById("sync-recordings-panel").hidden = true;
+    document.querySelectorAll(".stat-card").forEach(c => c.classList.remove("active"));
+    syncRecStatus = null;
+  }
+
+  document.getElementById("sync-panel-close").addEventListener("click", closeSyncRecPanel);
+
+  document.getElementById("sync-rec-prev").addEventListener("click", () => {
+    if (syncRecPage > 0) { syncRecPage--; loadSyncRecordings(); }
+  });
+
+  document.getElementById("sync-rec-next").addEventListener("click", () => {
+    syncRecPage++;
+    loadSyncRecordings();
+  });
+
+  // ── Retranscribe / Retransliterate Actions ────────────────────────
+
+  async function handleRecordingAction(action, id, btn) {
+    const origText = btn.textContent;
+    btn.textContent = "...";
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch(`/api/recordings/${id}/${action}`, { method: "POST" });
+      const data = await resp.json();
+      if (data.success) {
+        btn.textContent = "Done";
+        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+        loadSyncStatus();
+      } else {
+        btn.textContent = "Error";
+        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+      }
+    } catch {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+    }
+  }
+
+  // Bulk retranscribe
+  document.getElementById("sync-bulk-retranscribe").addEventListener("click", async () => {
+    if (!syncRecStatus) return;
+    const btn = document.getElementById("sync-bulk-retranscribe");
+    btn.textContent = "Processing...";
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch("/api/recordings/bulk-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "retranscribe", filter: { status: syncRecStatus } }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        btn.textContent = `Done (${data.count})`;
+        loadSyncStatus();
+        if (syncRecStatus) loadSyncRecordings();
+        setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
+      } else {
+        btn.textContent = "Error";
+        setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
+      }
+    } catch {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
+    }
+  });
+
+  // ── Speakers ─────────────────────────────────────────────────────
+
+  const enrollDropZone = document.getElementById("enroll-drop-zone");
+  const enrollFile = document.getElementById("enroll-file");
+  const enrollFileInfo = document.getElementById("enroll-file-info");
+  const enrollFilename = document.getElementById("enroll-filename");
+  const enrollClear = document.getElementById("enroll-clear");
+  const enrollSubmit = document.getElementById("enroll-submit");
+  const enrollLoading = document.getElementById("enroll-loading");
+  const enrollResult = document.getElementById("enroll-result");
+  const enrollName = document.getElementById("enroll-name");
+
+  let enrollSelectedFile = null;
+
+  if (enrollDropZone) {
+    enrollDropZone.addEventListener("click", () => enrollFile.click());
+    enrollDropZone.addEventListener("dragover", (e) => { e.preventDefault(); enrollDropZone.classList.add("dragover"); });
+    enrollDropZone.addEventListener("dragleave", () => enrollDropZone.classList.remove("dragover"));
+    enrollDropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      enrollDropZone.classList.remove("dragover");
+      if (e.dataTransfer.files.length > 0) selectEnrollFile(e.dataTransfer.files[0]);
+    });
+    enrollFile.addEventListener("change", () => {
+      if (enrollFile.files.length > 0) selectEnrollFile(enrollFile.files[0]);
+    });
+  }
+
+  function selectEnrollFile(file) {
+    enrollSelectedFile = file;
+    enrollFilename.textContent = file.name;
+    enrollFileInfo.hidden = false;
+    enrollDropZone.hidden = true;
+    updateEnrollButton();
+  }
+
+  if (enrollClear) {
+    enrollClear.addEventListener("click", () => {
+      enrollSelectedFile = null;
+      enrollFile.value = "";
+      enrollFileInfo.hidden = true;
+      enrollDropZone.hidden = false;
+      updateEnrollButton();
+      enrollResult.hidden = true;
+    });
+  }
+
+  function updateEnrollButton() {
+    if (enrollSubmit) enrollSubmit.disabled = !enrollSelectedFile || !enrollName.value.trim();
+  }
+
+  if (enrollName) enrollName.addEventListener("input", updateEnrollButton);
+
+  if (enrollSubmit) {
+    enrollSubmit.addEventListener("click", async () => {
+      if (!enrollSelectedFile || !enrollName.value.trim()) return;
+
+      enrollSubmit.disabled = true;
+      enrollLoading.hidden = false;
+      enrollResult.hidden = true;
+
+      try {
+        const formData = new FormData();
+        formData.append("file", enrollSelectedFile);
+        formData.append("name", enrollName.value.trim());
+        const desc = document.getElementById("enroll-desc").value.trim();
+        if (desc) formData.append("description", desc);
+
+        const resp = await fetch("/api/speakers/enroll", { method: "POST", body: formData });
+        const data = await resp.json();
+
+        if (data.error) throw new Error(data.error);
+
+        enrollResult.innerHTML = `<div style="color:var(--green)">Enrolled "${esc(data.name)}" (${data.num_samples} sample${data.num_samples > 1 ? "s" : ""})</div>`;
+        enrollResult.hidden = false;
+
+        // Reset form
+        enrollSelectedFile = null;
+        enrollFile.value = "";
+        enrollFileInfo.hidden = true;
+        enrollDropZone.hidden = false;
+        enrollName.value = "";
+        document.getElementById("enroll-desc").value = "";
+
+        loadSpeakers();
+      } catch (err) {
+        enrollResult.innerHTML = `<div style="color:var(--red)">Error: ${esc(err.message)}</div>`;
+        enrollResult.hidden = false;
+      } finally {
+        enrollSubmit.disabled = true;
+        enrollLoading.hidden = true;
+      }
+    });
+  }
+
+  async function loadSpeakers() {
+    const list = document.getElementById("speakers-list");
+    if (!list) return;
+
+    try {
+      const resp = await fetch("/api/speakers");
+      const data = await resp.json();
+      const speakers = data.speakers || [];
+
+      if (speakers.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-muted);padding:16px">No speakers enrolled yet. Upload a voice sample above to get started.</div>';
+        return;
+      }
+
+      list.innerHTML = speakers.map(s => `
+        <div class="speaker-card">
+          <div class="speaker-info">
+            <span class="speaker-name">${esc(s.name)}</span>
+            ${s.description ? `<span class="speaker-desc">${esc(s.description)}</span>` : ""}
+            <span class="speaker-meta">${s.num_samples} sample${s.num_samples > 1 ? "s" : ""}</span>
+          </div>
+          <button class="btn-action speaker-delete" data-id="${esc(s.speaker_id)}" data-name="${esc(s.name)}">Delete</button>
+        </div>
+      `).join("");
+
+      list.querySelectorAll(".speaker-delete").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if (!confirm(`Delete voice profile for "${btn.dataset.name}"?`)) return;
+          btn.textContent = "...";
+          btn.disabled = true;
+          try {
+            await fetch(`/api/speakers/${btn.dataset.id}`, { method: "DELETE" });
+            loadSpeakers();
+          } catch {
+            btn.textContent = "Error";
+            setTimeout(() => { btn.textContent = "Delete"; btn.disabled = false; }, 2000);
+          }
+        });
+      });
+    } catch {
+      list.innerHTML = '<div style="color:var(--text-muted)">Diarization service unavailable</div>';
+    }
+  }
 
   // ── Models ──────────────────────────────────────────────────────
 

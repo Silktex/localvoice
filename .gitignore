@@ -31,3 +31,6 @@ test-results/
 *.wav
 *.raw
 *.pcm
+
+# Data (recordings + DB - large binary files)
+data/

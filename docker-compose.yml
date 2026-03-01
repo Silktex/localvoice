@@ -147,7 +147,7 @@ services:
     ports:
       - "0.0.0.0:7001:7001"
     volumes:
-      - 3cx-data:/data:ro
+      - ./data:/data
     environment:
       - PORT=7001
       - THREECX_FQDN=${THREECX_FQDN:-}
@@ -156,6 +156,8 @@ services:
       - LOCALVOICE_STT_URL=http://whisper-stt:8080
       - LOCALVOICE_PIPER_URL=http://piper-tts:8000
       - LOCALVOICE_PARLER_URL=http://parler-tts:8001
+      - LOCALVOICE_KOKORO_URL=http://kokoro-tts:8880
+      - LOCALVOICE_DIAR_URL=http://diarization:8090
       - DB_PATH=/data/3cx.db3
       - RECORDINGS_DIR=/data/recordings
     depends_on:
@@ -163,10 +165,62 @@ services:
       - piper-tts
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7001/"]
+      test: ["CMD-SHELL", "bun -e \"fetch('http://localhost:7001/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 30s
       timeout: 10s
       start_period: 30s
+      retries: 3
+
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: localvoice-kokoro-tts
+    ports:
+      - "8880:8880"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  diarization:
+    build:
+      context: ./diarization
+      dockerfile: Dockerfile
+    container_name: localvoice-diarization
+    ports:
+      - "0.0.0.0:8090:8090"
+    volumes:
+      - ./data:/data
+      - diarization-models:/models
+    devices:
+      - "/dev/kfd:/dev/kfd"
+      - "/dev/dri:/dev/dri"
+    group_add:
+      - "993"  # kvm group GID — required for /dev/kfd ROCm access
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - DEVICE=${DIAR_DEVICE:-cpu}
+      - HSA_OVERRIDE_GFX_VERSION=9.0.0
+      - OMP_NUM_THREADS=${DIAR_THREADS:-4}
+      - MKL_NUM_THREADS=${DIAR_THREADS:-4}
+      - PORT=8090
+      - DB_PATH=/data/voices.db3
+      - ENROLLMENTS_DIR=/data/enrollments
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
       retries: 3
 
   3cx-sync:
@@ -175,12 +229,13 @@ services:
       dockerfile: Dockerfile
     container_name: localvoice-3cx-sync
     volumes:
-      - 3cx-data:/data
+      - ./data:/data
     environment:
       - THREECX_FQDN=${THREECX_FQDN:-}
       - THREECX_CLIENT_ID=${THREECX_CLIENT_ID:-}
       - THREECX_CLIENT_SECRET=${THREECX_CLIENT_SECRET:-}
       - LOCALVOICE_STT_URL=http://whisper-stt:8080
+      - LOCALVOICE_DIAR_URL=http://diarization:8090
       - DB_PATH=/data/3cx.db3
       - RECORDINGS_DIR=/data/recordings
       - SYNC_CRON_SCHEDULE=${SYNC_CRON_SCHEDULE:-*/15 * * * *}
@@ -207,4 +262,4 @@ volumes:
   whisper-models:
   piper-models:
   parler-models:
-  3cx-data:
+  diarization-models:

@@ -159,19 +159,21 @@ async function cmdTranscribe(
   flags: Record<string, string | true>,
 ): Promise<void> {
   const filePath = positional[0];
-  if (!filePath) die("usage: localvoice transcribe <audio-file> [--language <lang>] [--format <json|text>]");
+  if (!filePath) die("usage: localvoice transcribe <audio-file> [--language <lang>] [--format <json|text>] [--translate]");
 
   const file = Bun.file(filePath);
   if (!(await file.exists())) die(`file not found: ${filePath}`);
 
   const language = flag(flags, "language", "l");
   const format = flag(flags, "format", "f") ?? "json";
+  const translate = flag(flags, "translate", "t");
 
   const formData = new FormData();
   formData.append("file", file);
   formData.append("model", "whisper-1");
   formData.append("response_format", typeof format === "string" ? format : "json");
   if (typeof language === "string") formData.append("language", language);
+  if (translate) formData.append("translate", "true");
 
   let resp: Response;
   try {
