@@ -9,7 +9,7 @@
  * - Static file serving for the frontend
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join, extname } from "path";
 import { Database } from "bun:sqlite";
 import { WHISPER_MODELS } from "./models";
@@ -196,7 +196,7 @@ async function handleRecordingsList(url: URL): Promise<Response> {
     const rows = db.query(
       "SELECT id AS Id, from_display_name AS FromDisplayName, to_display_name AS ToDisplayName, " +
       "from_caller_number AS FromCallerNumber, to_caller_number AS ToCallerNumber, " +
-      "call_type AS CallType, duration AS Duration, start_time AS StartTime, " +
+      "call_type AS CallType, COALESCE(duration, local_duration) AS Duration, start_time AS StartTime, " +
       "local_transcription AS Transcription, summary AS Summary " +
       "FROM recordings ORDER BY id DESC LIMIT ? OFFSET ?"
     ).all(Number(top), Number(skip));
@@ -334,6 +334,44 @@ async function checkService(baseUrl: string): Promise<string> {
   return data.status === "healthy" ? "healthy" : data.status ?? "unknown";
 }
 
+// ── Sync Config (shared with 3cx-sync via /data volume) ───────────
+
+const SYNC_CONFIG_PATH = join(process.env.RECORDINGS_DIR ?? "/data/recordings", "..", "sync-config.json");
+const VALID_INTERVALS = [1, 2, 5, 10, 15, 30];
+
+function readSyncConfig(): { interval_minutes: number; last_sync_at: string | null } {
+  try {
+    if (existsSync(SYNC_CONFIG_PATH)) {
+      const raw = JSON.parse(readFileSync(SYNC_CONFIG_PATH, "utf-8"));
+      return {
+        interval_minutes: raw.interval_minutes ?? 5,
+        last_sync_at: raw.last_sync_at ?? null,
+      };
+    }
+  } catch {}
+  return { interval_minutes: 5, last_sync_at: null };
+}
+
+function writeSyncConfig(config: { interval_minutes: number; last_sync_at?: string | null }): void {
+  const existing = readSyncConfig();
+  const merged = { ...existing, ...config };
+  writeFileSync(SYNC_CONFIG_PATH, JSON.stringify(merged));
+}
+
+async function handleSetSyncSchedule(req: Request): Promise<Response> {
+  try {
+    const body = await req.json() as { interval_minutes?: number };
+    const interval = body.interval_minutes;
+    if (!interval || !VALID_INTERVALS.includes(interval)) {
+      return Response.json({ error: `interval_minutes must be one of: ${VALID_INTERVALS.join(", ")}` }, { status: 400 });
+    }
+    writeSyncConfig({ interval_minutes: interval });
+    return Response.json(readSyncConfig());
+  } catch {
+    return Response.json({ error: "Invalid request body" }, { status: 400 });
+  }
+}
+
 // ── Sync Status ────────────────────────────────────────────────────
 
 async function handleSyncStatus(): Promise<Response> {
@@ -386,6 +424,47 @@ interface Segment {
   end: number;
   text: string;
   speaker?: string;
+}
+
+/** Assign speaker labels to transcription segments based on diarization overlap (mirrors Python sync logic). */
+function mergeDiarizationWithTranscription(
+  whisperSegments: Segment[],
+  diarSegments: Array<{ start: number; end: number; speaker_label?: string; speaker?: string }>,
+  speakerMap: Record<string, { name?: string | null }>
+): Segment[] {
+  for (const wSeg of whisperSegments) {
+    const wStart = wSeg.start ?? 0;
+    const wEnd = wSeg.end ?? 0;
+    let bestSpeaker: string | null = null;
+    let bestOverlap = 0;
+
+    for (const dSeg of diarSegments) {
+      const dStart = dSeg.start ?? 0;
+      const dEnd = dSeg.end ?? 0;
+      const overlap = Math.max(0, Math.min(wEnd, dEnd) - Math.max(wStart, dStart));
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        bestSpeaker = dSeg.speaker_label ?? dSeg.speaker ?? null;
+      }
+    }
+
+    if (bestSpeaker && bestSpeaker in speakerMap) {
+      const info = speakerMap[bestSpeaker];
+      const name = info && typeof info === "object" ? info.name : null;
+      wSeg.speaker = name || bestSpeaker;
+    } else if (bestSpeaker) {
+      wSeg.speaker = bestSpeaker;
+    }
+  }
+  return whisperSegments;
+}
+
+/** Run diarization in background via worker subprocess (avoids Bun fetch timeout issues). */
+function runDiarization(id: number): void {
+  const workerPath = join(import.meta.dir, "diarize-worker.ts");
+  Bun.spawn(["bun", "run", workerPath, String(id)], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
 }
 
 function assignSpeakers(segments: Segment[], fromName: string | null, toName: string | null): Segment[] {
@@ -458,6 +537,46 @@ function handleRecordingDetail(id: string): Response {
   });
 }
 
+const DN_TYPE_LABELS: Record<number, string> = {
+  0: "Extension", 1: "External", 4: "Queue", 5: "Voicemail",
+  6: "IVR", 7: "Fax", 8: "Parking", 16: "Group",
+};
+
+function handleRecordingCallLog(id: string): Response {
+  const db = getLocalDb();
+  if (!db) return Response.json({ error: "Database not available" }, { status: 503 });
+
+  const numId = parseInt(id, 10);
+  if (isNaN(numId)) return Response.json({ error: "Invalid recording ID" }, { status: 400 });
+
+  const row = db.query("SELECT call_log_json FROM recordings WHERE id = ?").get(numId) as { call_log_json: string | null } | null;
+  if (!row) return Response.json({ error: "Recording not found" }, { status: 404 });
+
+  if (!row.call_log_json) {
+    return Response.json({ segments: [] });
+  }
+
+  try {
+    const rawEntries = JSON.parse(row.call_log_json) as Array<Record<string, unknown>>;
+    const segments = rawEntries.map((entry, i) => ({
+      order: i + 1,
+      source_name: entry.SourceDisplayName || entry.SourceName || entry.Caller || "",
+      source_number: entry.SourceNumber || entry.SourceDn || "",
+      source_type: DN_TYPE_LABELS[entry.SrcDnType as number ?? entry.SourceType as number] || String(entry.SrcDnType ?? entry.SourceType ?? ""),
+      dest_name: entry.DestinationDisplayName || entry.DestinationName || entry.Callee || "",
+      dest_number: entry.DestinationNumber || entry.DestinationDn || "",
+      dest_type: DN_TYPE_LABELS[entry.DstDnType as number ?? entry.DestinationType as number] || String(entry.DstDnType ?? entry.DestinationType ?? ""),
+      reason: entry.Reason || "",
+      ring_time: entry.RingingDuration ?? entry.RingTime ?? null,
+      talk_time: entry.TalkingDuration ?? entry.TalkTime ?? null,
+      segment_start: entry.StartTime || entry.SegmentStartTime || "",
+    }));
+    return Response.json({ segments });
+  } catch {
+    return Response.json({ segments: [] });
+  }
+}
+
 async function handleRecordingAudioLocal(id: string): Promise<Response | null> {
   const db = getLocalDb();
   if (!db) return null;
@@ -500,6 +619,7 @@ function serveStatic(pathname: string): Response {
 
 Bun.serve({
   port: PORT,
+  idleTimeout: 255, // seconds — diarization on CPU can take minutes
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;
@@ -513,6 +633,11 @@ Bun.serve({
       const detailMatch = path.match(/^\/api\/recordings\/(\d+)\/detail$/);
       if (detailMatch && req.method === "GET") {
         return handleRecordingDetail(detailMatch[1]);
+      }
+
+      const callLogMatch = path.match(/^\/api\/recordings\/(\d+)\/call-log$/);
+      if (callLogMatch && req.method === "GET") {
+        return handleRecordingCallLog(callLogMatch[1]);
       }
 
       const audioMatch = path.match(/^\/api\/recordings\/(\d+)\/audio$/);
@@ -541,27 +666,41 @@ Bun.serve({
       }
 
       if (path === "/api/sync/schedule" && req.method === "GET") {
-        const interval = Number(process.env.SYNC_INTERVAL_MINUTES ?? "15");
-        return Response.json({ interval_minutes: interval });
+        return Response.json(readSyncConfig());
+      }
+
+      if (path === "/api/sync/schedule" && req.method === "POST") {
+        return await handleSetSyncSchedule(req);
       }
 
       if (path === "/api/sync/trigger" && req.method === "POST") {
         return Response.json({ message: "Manual sync trigger not yet implemented" }, { status: 501 });
       }
 
-      // Sync recordings list (clickable stat cards)
+      // Sync recordings list
       if (path === "/api/sync/recordings" && req.method === "GET") {
         const db = getLocalDb();
         if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
-        const status = url.searchParams.get("status") ?? "pending";
-        const limit = Number(url.searchParams.get("limit") ?? "50");
+        const status = url.searchParams.get("status");
+        const limit = Number(url.searchParams.get("limit") ?? "25");
         const offset = Number(url.searchParams.get("offset") ?? "0");
-        const rows = db.query(
-          "SELECT id, start_time, from_display_name, to_display_name, call_type, duration, local_transcription " +
-          "FROM recordings WHERE sync_status = ? ORDER BY id DESC LIMIT ? OFFSET ?"
-        ).all(status, limit, offset);
-        const total = db.query("SELECT COUNT(*) as count FROM recordings WHERE sync_status = ?").get(status) as {count: number};
-        return Response.json({ recordings: rows, total: total.count });
+        if (status) {
+          const rows = db.query(
+            "SELECT id, start_time, from_display_name, to_display_name, call_type, " +
+            "COALESCE(duration, local_duration) AS duration, sync_status, error_message " +
+            "FROM recordings WHERE sync_status = ? ORDER BY id DESC LIMIT ? OFFSET ?"
+          ).all(status, limit, offset);
+          const total = db.query("SELECT COUNT(*) as count FROM recordings WHERE sync_status = ?").get(status) as {count: number};
+          return Response.json({ recordings: rows, total: total.count });
+        } else {
+          const rows = db.query(
+            "SELECT id, start_time, from_display_name, to_display_name, call_type, " +
+            "COALESCE(duration, local_duration) AS duration, sync_status, error_message " +
+            "FROM recordings ORDER BY id DESC LIMIT ? OFFSET ?"
+          ).all(limit, offset);
+          const total = db.query("SELECT COUNT(*) as count FROM recordings").get() as {count: number};
+          return Response.json({ recordings: rows, total: total.count });
+        }
       }
 
       // Retranscribe single recording
@@ -642,17 +781,77 @@ Bun.serve({
         return Response.json(await resp.json(), { status: resp.status });
       }
 
-      // Re-diarize a recording
+      // Re-diarize a recording (async — fires worker subprocess, returns immediately)
       const rediarizeMatch = path.match(/^\/api\/recordings\/(\d+)\/rediarize$/);
       if (rediarizeMatch && req.method === "POST") {
         const db = getWriteDb();
         if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
         const id = parseInt(rediarizeMatch[1], 10);
+
+        // Verify recording exists and has audio
+        const rec = db.query(
+          "SELECT opus_path, wav_path FROM recordings WHERE id = ?"
+        ).get(id) as { opus_path: string | null; wav_path: string | null } | null;
+        if (!rec) return Response.json({ error: "Recording not found" }, { status: 404 });
+
+        let hasAudio = false;
+        if (rec.opus_path && existsSync(join(RECORDINGS_DIR, rec.opus_path))) hasAudio = true;
+        if (!hasAudio && rec.wav_path && existsSync(join(RECORDINGS_DIR, rec.wav_path))) hasAudio = true;
+        if (!hasAudio) return Response.json({ error: "Audio file not found" }, { status: 404 });
+
+        // Mark as processing and launch worker
         db.run(
-          "UPDATE recordings SET sync_status_diar='pending', diarization_json=NULL, speaker_map_json=NULL, " +
+          "UPDATE recordings SET sync_status_diar='processing', diarization_json=NULL, speaker_map_json=NULL, " +
           "diarized_at=NULL, updated_at=datetime('now') WHERE id=?", [id]
         );
+        runDiarization(id);
+
+        return Response.json({ success: true, id, status: "processing" });
+      }
+
+      // Save edited speaker labels on segments
+      const segEditMatch = path.match(/^\/api\/recordings\/(\d+)\/segments$/);
+      if (segEditMatch && req.method === "PUT") {
+        const db = getWriteDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const id = parseInt(segEditMatch[1], 10);
+        const body = await req.json() as { segments: unknown[] };
+        if (!Array.isArray(body.segments)) {
+          return Response.json({ error: "segments array required" }, { status: 400 });
+        }
+        db.run(
+          "UPDATE recordings SET segments_json=?, updated_at=datetime('now') WHERE id=?",
+          [JSON.stringify(body.segments), id]
+        );
         return Response.json({ success: true, id });
+      }
+
+      // Enroll a speaker from a recording audio clip
+      const enrollClipMatch = path.match(/^\/api\/recordings\/(\d+)\/enroll-clip$/);
+      if (enrollClipMatch && req.method === "POST") {
+        const db = getLocalDb();
+        if (!db) return Response.json({ error: "DB unavailable" }, { status: 503 });
+        const id = parseInt(enrollClipMatch[1], 10);
+        const body = await req.json() as { start: number; end: number; speaker_name: string };
+        if (!body.speaker_name || body.start == null || body.end == null) {
+          return Response.json({ error: "start, end, speaker_name required" }, { status: 400 });
+        }
+        const row = db.query("SELECT opus_path FROM recordings WHERE id = ?").get(id) as { opus_path: string | null } | null;
+        if (!row?.opus_path) return Response.json({ error: "Recording audio not found" }, { status: 404 });
+        const audioPath = join(RECORDINGS_DIR, row.opus_path);
+        if (!existsSync(audioPath)) return Response.json({ error: "Audio file missing" }, { status: 404 });
+
+        const formData = new FormData();
+        formData.append("file", Bun.file(audioPath));
+        formData.append("name", body.speaker_name);
+        formData.append("start", String(body.start));
+        formData.append("end", String(body.end));
+
+        const resp = await fetch(`${LOCALVOICE.diarization}/enroll-clip`, {
+          method: "POST",
+          body: formData,
+        });
+        return Response.json(await resp.json(), { status: resp.status });
       }
 
       // TTS voices

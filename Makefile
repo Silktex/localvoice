@@ -1,4 +1,4 @@
-.PHONY: stt-model stt-model-en stt-up stt-logs web-up sync-up sync-logs 3cx-cli test
+.PHONY: stt-model stt-model-en stt-up stt-logs web-up sync-up sync-logs test
 
 STT_MODEL ?= small
 STT_MODEL_VOLUME ?= localvoice_whisper-models
@@ -30,8 +30,6 @@ sync-up:
 sync-logs:
 	docker compose logs --tail=120 3cx-sync
 
-3cx-cli:
-	docker compose --profile 3cx-cli run --rm 3cx-tools python3 $(CMD)
 
 test:
 	./test-services.sh
