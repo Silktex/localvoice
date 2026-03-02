@@ -1,41 +1,42 @@
-"""Speaker embedding extraction and comparison using SpeechBrain ECAPA-TDNN."""
+"""Speaker embedding extraction and comparison using pyannote WeSpeaker ResNet34."""
 
 import os
 
 import numpy as np
-import torch
-import torchaudio
 
-_classifier = None
-MODEL_DIR = "/models/ecapa-tdnn"
+_inference = None
+MODEL_DIR = "/models/wespeaker"
 
 
-def get_classifier():
-    global _classifier
-    if _classifier is None:
-        from speechbrain.inference.speaker import EncoderClassifier
+def get_inference():
+    """Load and cache the pyannote WeSpeaker embedding model."""
+    global _inference
+    if _inference is None:
+        from pyannote.audio import Inference, Model
 
-        device = os.environ.get("DEVICE", "cpu")
-        _classifier = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=MODEL_DIR,
-            run_opts={"device": device},
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            raise RuntimeError(
+                "HF_TOKEN environment variable required for pyannote.audio. "
+                "Get one at https://huggingface.co/settings/tokens"
+            )
+
+        model = Model.from_pretrained(
+            "pyannote/wespeaker-voxceleb-resnet34-LM",
+            use_auth_token=hf_token,
+            cache_dir=MODEL_DIR,
         )
-    return _classifier
+        model.to("cpu")
+        _inference = Inference(model, window="whole")
+        print("WeSpeaker ResNet34 embedding model loaded (cpu, 256-dim)")
+    return _inference
 
 
 def extract_embedding(audio_path: str) -> list[float]:
-    """Extract a 192-dim speaker embedding from an audio file."""
-    classifier = get_classifier()
-    signal, sr = torchaudio.load(audio_path)
-    # Resample to 16kHz if needed
-    if sr != 16000:
-        signal = torchaudio.functional.resample(signal, sr, 16000)
-    # Mix to mono
-    if signal.shape[0] > 1:
-        signal = signal.mean(dim=0, keepdim=True)
-    embedding = classifier.encode_batch(signal)  # shape: [1, 1, 192]
-    return embedding.squeeze().tolist()
+    """Extract a 256-dim speaker embedding from an audio file."""
+    inference = get_inference()
+    embedding = inference(audio_path)  # returns numpy array (256,)
+    return embedding.tolist()
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

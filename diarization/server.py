@@ -6,13 +6,12 @@ import tempfile
 import traceback
 
 # PyTorch 2.6 compat: defaults weights_only=True which breaks
-# pyannote.audio and speechbrain model loading (pickled TorchVersion objects).
-# Patch before any model imports.
+# pyannote.audio and lightning_fabric model loading (pickled TorchVersion objects).
+# Force weights_only=False on ALL torch.load calls. Patch before any model imports.
 import torch
 _orig_torch_load = torch.load
 def _compat_torch_load(*args, **kwargs):
-    if "weights_only" not in kwargs:
-        kwargs["weights_only"] = False
+    kwargs["weights_only"] = False
     return _orig_torch_load(*args, **kwargs)
 torch.load = _compat_torch_load
 
@@ -41,7 +40,7 @@ async def startup():
         print(f"WARNING: Diarization model failed to load: {e}")
 
     try:
-        embeddings.get_classifier()
+        embeddings.get_inference()
         _models_ready["embedding"] = True
         print("Embedding model ready")
     except Exception as e:
@@ -60,10 +59,10 @@ async def health():
         "status": status,
         "models": {
             "diarization": "pyannote/speaker-diarization-3.1" if _models_ready["diarization"] else "loading",
-            "embedding": "speechbrain/spkrec-ecapa-voxceleb" if _models_ready["embedding"] else "loading",
+            "embedding": "pyannote/wespeaker-voxceleb-resnet34-LM" if _models_ready["embedding"] else "loading",
         },
         "speakers_enrolled": len(speakers),
-        "device": os.environ.get("DEVICE", "cpu"),
+        "device": "cpu",
     }
 
 
@@ -110,7 +109,7 @@ async def diarize(
 
 @app.post("/embed")
 async def embed(file: UploadFile = File(...)):
-    """Extract a 192-dim speaker embedding from audio."""
+    """Extract a 256-dim speaker embedding from audio."""
     tmp_path = _save_upload(file)
     try:
         embedding = embeddings.extract_embedding(tmp_path)
@@ -160,6 +159,57 @@ async def enroll(
         os.unlink(tmp_path)
 
 
+@app.post("/enroll-clip")
+async def enroll_clip(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    start: float = Form(...),
+    end: float = Form(...),
+    description: str = Form(None),
+):
+    """Enroll a speaker from a time range of an audio file."""
+    import subprocess
+
+    tmp_path = _save_upload(file)
+    clip_path = tmp_path + "_clip.wav"
+    try:
+        duration = end - start
+        if duration < 1.0:
+            return JSONResponse({"error": "Clip must be at least 1 second"}, status_code=400)
+        if duration > 60.0:
+            return JSONResponse({"error": "Clip must be under 60 seconds"}, status_code=400)
+
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_path, "-ss", str(start), "-t", str(duration),
+             "-ar", "16000", "-ac", "1", clip_path],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return JSONResponse({"error": f"ffmpeg failed: {result.stderr.decode()}"}, status_code=500)
+
+        embedding = embeddings.extract_embedding(clip_path)
+        info = sf.info(clip_path)
+
+        sample_filename = f"{name.lower().replace(' ', '_')}_clip_{int(start)}s_{int(end)}s.wav"
+        sample_path = os.path.join(db.ENROLLMENTS_DIR, sample_filename)
+        shutil.copy2(clip_path, sample_path)
+
+        return db.upsert_speaker(
+            name=name,
+            embedding=embedding,
+            description=description,
+            audio_path=sample_filename,
+            duration=info.duration,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        os.unlink(tmp_path)
+        if os.path.exists(clip_path):
+            os.unlink(clip_path)
+
+
 @app.get("/speakers")
 async def list_speakers():
     return {"speakers": db.list_speakers()}
@@ -200,13 +250,18 @@ async def identify(
 async def diarize_and_identify(
     file: UploadFile = File(...),
     num_speakers: int | None = Form(None),
+    max_speakers: int | None = Form(None),
     threshold: float = Form(0.65),
 ):
     """Combined: diarize audio, then identify each speaker against enrolled profiles."""
     tmp_path = _save_upload(file)
     try:
         # Step 1: Diarize
-        segments = models.diarize(tmp_path, num_speakers=num_speakers)
+        segments = models.diarize(
+            tmp_path,
+            num_speakers=num_speakers,
+            max_speakers=max_speakers,
+        )
         info = sf.info(tmp_path)
 
         # Step 2: Get unique speaker labels
@@ -239,8 +294,6 @@ async def diarize_and_identify(
             if not chunks:
                 speaker_map[speaker_label] = {"name": None, "confidence": 0.0}
                 continue
-
-            import torch
 
             combined = torch.cat(chunks, dim=1)
 

@@ -7,8 +7,9 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from aksharamukha import transliterate as aksha
@@ -109,6 +110,8 @@ def init_db():
         "ALTER TABLE recordings ADD COLUMN speaker_map_json TEXT",
         "ALTER TABLE recordings ADD COLUMN diarized_at TEXT",
         "ALTER TABLE recordings ADD COLUMN sync_status_diar TEXT DEFAULT 'pending'",
+        "ALTER TABLE recordings ADD COLUMN call_log_json TEXT",
+        "ALTER TABLE recordings ADD COLUMN call_log_synced INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         try:
@@ -224,6 +227,134 @@ def fetch_all_recordings(config, db):
 
     print(f"  Done: {total_new} new recordings added, {total_existing} already in DB")
     return total_new
+
+# -- Phase 1.5: Fetch Call Logs ------------------------------------------------
+
+DN_TYPE_LABELS = {
+    0: "Extension", 1: "External", 4: "Queue", 5: "Voicemail",
+    6: "IVR", 7: "Fax", 8: "Parking", 16: "Group",
+}
+
+def fetch_call_logs(config, db):
+    """Fetch call log data from 3CX for recordings that don't have it yet."""
+    rows = db.execute(
+        "SELECT id, start_time, end_time, from_caller_number, to_caller_number "
+        "FROM recordings WHERE (call_log_synced = 0 OR call_log_synced IS NULL) "
+        "AND start_time IS NOT NULL ORDER BY start_time"
+    ).fetchall()
+
+    if not rows:
+        print("  No recordings need call log data")
+        return 0
+
+    print(f"  {len(rows)} recordings to fetch call logs for")
+
+    # Group recordings by date to batch API calls
+    by_date = defaultdict(list)
+    for rec_id, start_time, end_time, from_num, to_num in rows:
+        try:
+            dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            date_key = dt.strftime("%Y-%m-%d")
+        except (ValueError, AttributeError):
+            continue
+        by_date[date_key].append({
+            "id": rec_id, "start": start_time, "end": end_time,
+            "from_num": from_num or "", "to_num": to_num or "",
+        })
+
+    matched = 0
+    for date_key, recs in sorted(by_date.items()):
+        try:
+            # Query call logs for this entire day
+            period_from = f"{date_key}T00:00:00"
+            period_to = f"{date_key}T23:59:59"
+            headers = get_headers(config)
+
+            url = api_url(config, "ReportCallLogData/Pbx.GetCallLogData()")
+            params = {
+                "periodFrom": period_from,
+                "periodTo": period_to,
+                "$top": "1000",
+                "$orderby": "StartTime",
+            }
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            log_entries = data.get("value", [])
+
+            if not log_entries:
+                # Mark all recordings for this date as synced (no logs found)
+                for rec in recs:
+                    db.execute(
+                        "UPDATE recordings SET call_log_synced=1, updated_at=datetime('now') WHERE id=?",
+                        (rec["id"],)
+                    )
+                db.commit()
+                continue
+
+            # Match log entries to recordings by time overlap
+            for rec in recs:
+                try:
+                    rec_start = datetime.fromisoformat(rec["start"].replace("Z", "+00:00"))
+                    rec_end_str = rec["end"]
+                    rec_end = datetime.fromisoformat(rec_end_str.replace("Z", "+00:00")) if rec_end_str else rec_start + timedelta(hours=1)
+                except (ValueError, AttributeError):
+                    db.execute("UPDATE recordings SET call_log_synced=1 WHERE id=?", (rec["id"],))
+                    continue
+
+                # Find log entries overlapping this recording's time window (with 60s buffer)
+                window_start = rec_start - timedelta(seconds=60)
+                window_end = rec_end + timedelta(seconds=60)
+
+                matching_logs = []
+                for entry in log_entries:
+                    try:
+                        entry_start_str = entry.get("StartTime") or entry.get("start_time", "")
+                        entry_start = datetime.fromisoformat(entry_start_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        continue
+
+                    if window_start <= entry_start <= window_end:
+                        # Check if participant numbers match
+                        entry_src = str(entry.get("SourceNumber", entry.get("Caller", "")))
+                        entry_dst = str(entry.get("DestinationNumber", entry.get("Callee", "")))
+                        rec_from = rec["from_num"]
+                        rec_to = rec["to_num"]
+
+                        # Require at least one participant number match
+                        if not rec_from and not rec_to:
+                            continue  # skip — can't match without numbers
+                        if (rec_from and (rec_from in entry_src or rec_from in entry_dst)) or \
+                           (rec_to and (rec_to in entry_src or rec_to in entry_dst)):
+                            matching_logs.append(entry)
+
+                if matching_logs:
+                    db.execute(
+                        "UPDATE recordings SET call_log_json=?, call_log_synced=1, "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (json.dumps(matching_logs), rec["id"])
+                    )
+                    matched += 1
+                else:
+                    db.execute(
+                        "UPDATE recordings SET call_log_synced=1, updated_at=datetime('now') WHERE id=?",
+                        (rec["id"],)
+                    )
+
+            db.commit()
+            date_matched = sum(1 for r in recs if db.execute(
+                "SELECT call_log_json FROM recordings WHERE id=? AND call_log_json IS NOT NULL", (r["id"],)
+            ).fetchone())
+            print(f"  Date {date_key}: {len(log_entries)} log entries, {date_matched}/{len(recs)} recordings matched")
+
+        except Exception as e:
+            print(f"  ERROR fetching call logs for {date_key}: {e}", file=sys.stderr)
+            # Don't mark as synced on error — will retry next time
+            continue
+
+    db.commit()
+    print(f"  Done: {matched} recordings enriched with call log data")
+    return matched
 
 # -- Phase 2: Download WAVs ----------------------------------------------------
 
@@ -502,23 +633,82 @@ def diarize_recordings(db):
             continue
 
         try:
+            # Determine speaker count hint from 3CX participant metadata
+            participants = db.execute(
+                "SELECT participant_names FROM recordings WHERE id=?", (rec_id,)
+            ).fetchone()
+            participant_count = None
+            if participants and participants[0]:
+                names = [n.strip() for n in participants[0].split(",") if n.strip()]
+                participant_count = len(names) if names else None
+
+            diar_data = {}
+            if participant_count and participant_count >= 2:
+                # Use as max_speakers hint, not hard constraint
+                diar_data["max_speakers"] = str(participant_count)
+            else:
+                # Default hint for typical phone calls
+                diar_data["max_speakers"] = "2"
+
             with open(audio_file, "rb") as f:
                 resp = requests.post(
                     f"{LOCALVOICE_DIAR_URL}/diarize-and-identify",
                     files={"file": (os.path.basename(audio_file), f, audio_mime)},
-                    data={"num_speakers": "2"},
+                    data=diar_data,
                     timeout=600
                 )
             resp.raise_for_status()
             data = resp.json()
+
+            diar_segments = data.get("segments", [])
+            speaker_map = data.get("speakers", {})
+
+            # Map diarized speakers to 3CX caller metadata for 2-speaker calls
+            speaker_labels = list(dict.fromkeys(
+                s.get("speaker_label") or s.get("speaker", "") for s in diar_segments
+            ))
+            speaker_labels = [l for l in speaker_labels if l]
+
+            rec_meta = db.execute(
+                "SELECT from_display_name, to_display_name, call_type FROM recordings WHERE id=?",
+                (rec_id,)
+            ).fetchone()
+
+            if (len(speaker_labels) == 2 and rec_meta
+                    and rec_meta[0] and rec_meta[1]):
+                from_name, to_name, rec_call_type = rec_meta
+                # Only apply if no enrolled speaker names exist
+                has_enrolled = any(
+                    isinstance(speaker_map.get(l), dict) and speaker_map[l].get("name")
+                    for l in speaker_labels
+                )
+                if not has_enrolled:
+                    # Find which speaker talks first
+                    first_by_label = {}
+                    for seg in diar_segments:
+                        label = seg.get("speaker_label") or seg.get("speaker", "")
+                        if label and label not in first_by_label:
+                            first_by_label[label] = seg.get("start", 0)
+                    sorted_labels = sorted(speaker_labels, key=lambda l: first_by_label.get(l, 0))
+
+                    # Heuristic: inbound calls → answerer (to) speaks first
+                    is_inbound = "inbound" in (rec_call_type or "").lower()
+                    first_name = to_name if is_inbound else from_name
+                    second_name = from_name if is_inbound else to_name
+
+                    for l in speaker_labels:
+                        if l not in speaker_map or not isinstance(speaker_map[l], dict):
+                            speaker_map[l] = {}
+                    speaker_map[sorted_labels[0]]["name"] = first_name
+                    speaker_map[sorted_labels[1]]["name"] = second_name
 
             db.execute(
                 "UPDATE recordings SET diarization_json=?, speaker_map_json=?, "
                 "diarized_at=datetime('now'), sync_status_diar='diarized', "
                 "updated_at=datetime('now') WHERE id=?",
                 (
-                    json.dumps(data.get("segments", [])),
-                    json.dumps(data.get("speakers", {})),
+                    json.dumps(diar_segments),
+                    json.dumps(speaker_map),
                     rec_id
                 )
             )
@@ -530,7 +720,7 @@ def diarize_recordings(db):
             if existing_segments and existing_segments[0]:
                 segments = json.loads(existing_segments[0])
                 segments = merge_diarization_with_transcription(
-                    segments, data.get("segments", []), data.get("speakers", {})
+                    segments, diar_segments, speaker_map
                 )
                 db.execute(
                     "UPDATE recordings SET segments_json=?, updated_at=datetime('now') WHERE id=?",
@@ -564,6 +754,14 @@ def main():
 
     try:
         fetch_all_recordings(config, db)
+
+        # Phase 1.5: Enrich recordings with call log data
+        print("\n[1.5/5] Fetching call log data...")
+        try:
+            fetch_call_logs(config, db)
+        except Exception as e:
+            print(f"  Call log fetch failed (non-fatal): {e}", file=sys.stderr)
+
         download_recordings(config, db)
         convert_to_opus(db)
         transcribe_recordings(db)

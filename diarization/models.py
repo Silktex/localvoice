@@ -27,9 +27,8 @@ def get_pipeline():
             use_auth_token=hf_token,
             cache_dir=MODEL_DIR,
         )
-        device = os.environ.get("DEVICE", "cpu")
-        _pipeline.to(torch.device(device))
-        print(f"pyannote diarization pipeline loaded ({device})")
+        _pipeline.to(torch.device("cpu"))
+        print("pyannote diarization pipeline loaded (cpu)")
     return _pipeline
 
 

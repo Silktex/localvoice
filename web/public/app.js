@@ -9,6 +9,7 @@
   let currentPage = 0;
   let pageSize = 25;
   let expandedRow = null;
+  let cachedSpeakers = null;
 
   // ── Tab Switching ──────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@
       // Trigger data loads on tab switch
       if (tab.dataset.tab === "stt") populateSttModels();
       if (tab.dataset.tab === "speakers") loadSpeakers();
-      if (tab.dataset.tab === "sync") { loadSyncStatus(); initSyncCountdown(); }
+      if (tab.dataset.tab === "sync") { loadSyncProgress(); loadSyncTable(); initSyncCountdown(); }
     });
   });
 
@@ -163,6 +164,29 @@
           <div class="detail-actions">
             <a href="/api/recordings/${rec.Id}/audio" download="recording_${rec.Id}">Download</a>
           </div>
+          <div class="call-info-section" id="call-info-${rec.Id}">
+            <button class="call-info-toggle" data-rec-id="${rec.Id}">&#9654; Call Info</button>
+            <div class="call-info-body" id="call-info-body-${rec.Id}" hidden></div>
+          </div>
+          <div class="train-panel" id="train-panel-${rec.Id}">
+            <span class="train-label">Train:</span>
+            <button class="btn-mark" data-action="set-start">Set Start</button>
+            <span class="time-display" id="train-start-${rec.Id}">--:--</span>
+            <span style="color:var(--text-muted)">—</span>
+            <button class="btn-mark" data-action="set-end">Set End</button>
+            <span class="time-display" id="train-end-${rec.Id}">--:--</span>
+            <select id="train-speaker-${rec.Id}"><option value="">Speaker…</option></select>
+            <input type="text" class="new-speaker-input" id="train-new-name-${rec.Id}" placeholder="New name…" style="display:none">
+            <button class="btn-enroll" id="train-enroll-${rec.Id}" disabled>Enroll Clip</button>
+          </div>
+          <div class="edit-toolbar" id="edit-toolbar-${rec.Id}" style="display:none">
+            <select id="edit-from-${rec.Id}"></select>
+            <span class="arrow">→</span>
+            <select id="edit-to-${rec.Id}"><option value="">Speaker…</option></select>
+            <input type="text" class="custom-name" id="edit-custom-${rec.Id}" placeholder="Custom name…" style="display:none">
+            <button class="btn-sm" id="edit-apply-${rec.Id}">Apply All</button>
+            <button class="btn-save" id="edit-save-${rec.Id}" disabled>Save Changes</button>
+          </div>
           <div class="transcription-container" id="transcription-${rec.Id}">
             <div class="loading">Loading transcription...</div>
           </div>
@@ -177,13 +201,131 @@
     tr.after(detailTr);
     expandedRow = detailTr;
 
+    // Call Info toggle
+    const callInfoToggle = detailTr.querySelector(`[data-rec-id="${rec.Id}"]`);
+    if (callInfoToggle) {
+      callInfoToggle.addEventListener("click", () => {
+        const body = detailTr.querySelector(`#call-info-body-${rec.Id}`);
+        const isOpen = !body.hidden;
+        body.hidden = isOpen;
+        callInfoToggle.classList.toggle("open", !isOpen);
+        if (!isOpen && !body.dataset.loaded) {
+          loadCallInfo(rec.Id, body);
+        }
+      });
+    }
+
     // Fetch detail with segments
     loadRecordingDetail(rec, detailTr);
+  }
+
+  async function loadCallInfo(recId, container) {
+    container.innerHTML = '<div class="loading" style="padding:8px">Loading call info...</div>';
+    container.dataset.loaded = "1";
+    try {
+      const resp = await fetch(`/api/recordings/${recId}/call-log`);
+      const data = await resp.json();
+      if (!data.segments || data.segments.length === 0) {
+        container.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:0.8rem">No call log data available</div>';
+        return;
+      }
+      let html = '<table class="call-info-table"><thead><tr>' +
+        '<th>From</th><th>To</th><th>Type</th><th>Action</th><th>Ring</th><th>Talk</th>' +
+        '</tr></thead><tbody>';
+      for (const seg of data.segments) {
+        const srcLabel = seg.source_name || seg.source_number || "-";
+        const dstLabel = seg.dest_name || seg.dest_number || "-";
+        const typeLabel = [seg.source_type, seg.dest_type].filter(Boolean).join(" → ") || "-";
+        const ring = seg.ring_time != null ? formatDuration(seg.ring_time) : "-";
+        const talk = seg.talk_time != null ? formatDuration(seg.talk_time) : "-";
+        html += `<tr>` +
+          `<td>${esc(String(srcLabel))}</td>` +
+          `<td>${esc(String(dstLabel))}</td>` +
+          `<td>${esc(String(typeLabel))}</td>` +
+          `<td>${esc(String(seg.reason || "-"))}</td>` +
+          `<td>${ring}</td>` +
+          `<td>${talk}</td>` +
+          `</tr>`;
+      }
+      html += '</tbody></table>';
+      container.innerHTML = html;
+    } catch (err) {
+      container.innerHTML = `<div style="padding:8px;color:var(--red);font-size:0.8rem">Error loading call info: ${esc(err.message)}</div>`;
+    }
   }
 
   async function loadRecordingDetail(rec, detailTr) {
     const container = detailTr.querySelector(`#transcription-${rec.Id}`);
     const audio = detailTr.querySelector("audio");
+
+    // Fetch enrolled speakers (cached)
+    if (!cachedSpeakers) {
+      try {
+        const sr = await fetch("/api/speakers");
+        if (sr.ok) { const d = await sr.json(); cachedSpeakers = d.speakers || []; }
+        else cachedSpeakers = [];
+      } catch { cachedSpeakers = []; }
+    }
+
+    // Populate train panel speaker dropdown
+    const trainSelect = detailTr.querySelector(`#train-speaker-${rec.Id}`);
+    const trainNewName = detailTr.querySelector(`#train-new-name-${rec.Id}`);
+    const trainEnroll = detailTr.querySelector(`#train-enroll-${rec.Id}`);
+    trainSelect.innerHTML = '<option value="">Speaker…</option>';
+    cachedSpeakers.forEach(s => {
+      trainSelect.insertAdjacentHTML("beforeend", `<option value="${esc(s.name)}">${esc(s.name)}</option>`);
+    });
+    trainSelect.insertAdjacentHTML("beforeend", '<option value="__new__">New speaker…</option>');
+    trainSelect.addEventListener("change", () => {
+      trainNewName.style.display = trainSelect.value === "__new__" ? "" : "none";
+      updateTrainButton();
+    });
+    trainNewName.addEventListener("input", updateTrainButton);
+
+    // Train panel time markers
+    let trainStart = null, trainEnd = null;
+    const startDisplay = detailTr.querySelector(`#train-start-${rec.Id}`);
+    const endDisplay = detailTr.querySelector(`#train-end-${rec.Id}`);
+
+    detailTr.querySelector('[data-action="set-start"]').addEventListener("click", () => {
+      trainStart = audio.currentTime;
+      startDisplay.textContent = fmtTime(trainStart);
+      updateTrainButton();
+    });
+    detailTr.querySelector('[data-action="set-end"]').addEventListener("click", () => {
+      trainEnd = audio.currentTime;
+      endDisplay.textContent = fmtTime(trainEnd);
+      updateTrainButton();
+    });
+
+    function getTrainSpeaker() {
+      return trainSelect.value === "__new__" ? trainNewName.value.trim() : trainSelect.value;
+    }
+    function updateTrainButton() {
+      trainEnroll.disabled = !(trainStart != null && trainEnd != null && trainEnd > trainStart && getTrainSpeaker());
+    }
+
+    trainEnroll.addEventListener("click", async () => {
+      const name = getTrainSpeaker();
+      if (!name) return;
+      trainEnroll.disabled = true;
+      trainEnroll.textContent = "Enrolling…";
+      try {
+        const resp = await fetch(`/api/recordings/${rec.Id}/enroll-clip`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start: trainStart, end: trainEnd, speaker_name: name }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || "Failed");
+        trainEnroll.textContent = "Enrolled!";
+        cachedSpeakers = null; // bust cache
+        setTimeout(() => { trainEnroll.textContent = "Enroll Clip"; updateTrainButton(); }, 2000);
+      } catch (err) {
+        trainEnroll.textContent = "Error";
+        setTimeout(() => { trainEnroll.textContent = "Enroll Clip"; trainEnroll.disabled = false; }, 2000);
+      }
+    });
 
     try {
       const resp = await fetch(`/api/recordings/${rec.Id}/detail`);
@@ -191,18 +333,121 @@
       const detail = await resp.json();
 
       if (detail.segments && detail.segments.length > 0) {
-        container.innerHTML = renderSegments(detail.segments, detail.from_display_name, detail.to_display_name);
+        let segments = detail.segments;
+        container.innerHTML = renderSegments(segments, detail.from_display_name, detail.to_display_name);
 
-        // Attach timestamp click handlers
-        container.querySelectorAll(".segment-time").forEach((el) => {
-          el.addEventListener("click", () => {
-            const time = parseFloat(el.dataset.time);
-            if (audio && !isNaN(time)) {
-              audio.currentTime = time;
-              audio.play();
-            }
+        // Show edit toolbar
+        const toolbar = detailTr.querySelector(`#edit-toolbar-${rec.Id}`);
+        toolbar.style.display = "";
+
+        // Populate "from" dropdown with unique speakers
+        const fromSelect = detailTr.querySelector(`#edit-from-${rec.Id}`);
+        const uniqueSpeakers = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
+        fromSelect.innerHTML = "";
+        uniqueSpeakers.forEach(sp => {
+          fromSelect.insertAdjacentHTML("beforeend", `<option value="${esc(sp)}">${esc(sp)}</option>`);
+        });
+
+        // Populate "to" dropdown with enrolled speakers
+        const toSelect = detailTr.querySelector(`#edit-to-${rec.Id}`);
+        const customInput = detailTr.querySelector(`#edit-custom-${rec.Id}`);
+        toSelect.innerHTML = '<option value="">Speaker…</option>';
+        cachedSpeakers.forEach(s => {
+          toSelect.insertAdjacentHTML("beforeend", `<option value="${esc(s.name)}">${esc(s.name)}</option>`);
+        });
+        toSelect.insertAdjacentHTML("beforeend", '<option value="__custom__">Custom…</option>');
+        toSelect.addEventListener("change", () => {
+          customInput.style.display = toSelect.value === "__custom__" ? "" : "none";
+        });
+
+        const saveBtn = detailTr.querySelector(`#edit-save-${rec.Id}`);
+        let dirty = false;
+
+        function markDirty() { dirty = true; saveBtn.disabled = false; }
+
+        // Bulk apply
+        detailTr.querySelector(`#edit-apply-${rec.Id}`).addEventListener("click", () => {
+          const from = fromSelect.value;
+          const to = toSelect.value === "__custom__" ? customInput.value.trim() : toSelect.value;
+          if (!from || !to) return;
+          segments.forEach(seg => { if (seg.speaker === from) seg.speaker = to; });
+          container.innerHTML = renderSegments(segments, detail.from_display_name, detail.to_display_name);
+          wireSegmentClicks();
+          markDirty();
+          // Refresh from dropdown
+          const updated = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
+          fromSelect.innerHTML = "";
+          updated.forEach(sp => {
+            fromSelect.insertAdjacentHTML("beforeend", `<option value="${esc(sp)}">${esc(sp)}</option>`);
           });
         });
+
+        // Save
+        saveBtn.addEventListener("click", async () => {
+          saveBtn.disabled = true;
+          saveBtn.textContent = "Saving…";
+          try {
+            const r = await fetch(`/api/recordings/${rec.Id}/segments`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ segments }),
+            });
+            if (!r.ok) throw new Error("Save failed");
+            saveBtn.textContent = "Saved!";
+            dirty = false;
+            setTimeout(() => { saveBtn.textContent = "Save Changes"; saveBtn.disabled = true; }, 2000);
+          } catch {
+            saveBtn.textContent = "Error";
+            setTimeout(() => { saveBtn.textContent = "Save Changes"; saveBtn.disabled = false; }, 2000);
+          }
+        });
+
+        // Per-segment inline editing via click
+        function wireSegmentClicks() {
+          container.querySelectorAll(".segment-time").forEach((el) => {
+            el.addEventListener("click", () => {
+              const time = parseFloat(el.dataset.time);
+              if (audio && !isNaN(time)) { audio.currentTime = time; audio.play(); }
+            });
+          });
+          container.querySelectorAll(".segment-speaker.editable").forEach((el) => {
+            el.addEventListener("click", (e) => {
+              e.stopPropagation();
+              const idx = parseInt(el.closest(".segment").dataset.index);
+              const sel = document.createElement("select");
+              sel.className = "speaker-select";
+              sel.innerHTML = '<option value="">—</option>';
+              cachedSpeakers.forEach(s => {
+                const opt = document.createElement("option");
+                opt.value = s.name; opt.textContent = s.name;
+                if (s.name === segments[idx].speaker) opt.selected = true;
+                sel.appendChild(opt);
+              });
+              const customOpt = document.createElement("option");
+              customOpt.value = "__custom__"; customOpt.textContent = "Custom…";
+              sel.appendChild(customOpt);
+              el.replaceWith(sel);
+              sel.focus();
+              sel.addEventListener("change", () => {
+                let newVal = sel.value;
+                if (newVal === "__custom__") {
+                  newVal = prompt("Enter speaker name:") || segments[idx].speaker;
+                }
+                if (newVal && newVal !== segments[idx].speaker) {
+                  segments[idx].speaker = newVal;
+                  markDirty();
+                }
+                container.innerHTML = renderSegments(segments, detail.from_display_name, detail.to_display_name);
+                wireSegmentClicks();
+              });
+              sel.addEventListener("blur", () => {
+                container.innerHTML = renderSegments(segments, detail.from_display_name, detail.to_display_name);
+                wireSegmentClicks();
+              });
+            });
+          });
+        }
+        wireSegmentClicks();
       } else if (detail.transcription) {
         container.innerHTML = `<div class="transcription"><strong>Transcription:</strong>\n${esc(detail.transcription)}</div>`;
       } else if (rec.Transcription) {
@@ -220,11 +465,17 @@
     }
   }
 
+  function fmtTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  }
+
   function renderSegments(segments, fromName, toName) {
     const speakerSet = [...new Set(segments.map(s => s.speaker).filter(Boolean))];
     const speakerColors = ["caller", "called", "speaker-c", "speaker-d"];
 
-    const html = segments.map((seg) => {
+    const html = segments.map((seg, idx) => {
       const mm = Math.floor(seg.start / 60);
       const ss = Math.floor(seg.start % 60);
       const timeStr = `${mm}:${ss.toString().padStart(2, "0")}`;
@@ -232,9 +483,9 @@
       const speakerClass = speakerColors[speakerIdx] || "caller";
       const speakerShort = seg.speaker ? esc(seg.speaker.split(":")[0]) : "";
 
-      return `<div class="segment">
+      return `<div class="segment" data-index="${idx}">
         <span class="segment-time" data-time="${seg.start}" title="Click to seek">${timeStr}</span>
-        <span class="segment-speaker ${speakerClass}">${speakerShort}</span>
+        <span class="segment-speaker editable ${speakerClass}" title="Click to change speaker">${speakerShort}</span>
         <span class="segment-text">${esc(seg.text)}</span>
       </div>`;
     }).join("");
@@ -485,46 +736,226 @@
 
   // ── Sync Status ──────────────────────────────────────────────────
 
-  let syncRecPage = 0;
-  let syncRecStatus = null;
-  const SYNC_REC_LIMIT = 50;
+  let syncPage = 0;
+  let syncPageSize = 25;
+  let syncStatusFilter = "";
 
-  async function loadSyncStatus() {
+  async function loadSyncProgress() {
     try {
       const resp = await fetch("/api/sync/status");
       const data = await resp.json();
-      if (data.statuses) {
-        // Reset all to 0
-        document.querySelectorAll(".stat-card .stat-value").forEach(el => el.textContent = "0");
-        data.statuses.forEach(s => {
-          const card = document.querySelector(`.stat-card[data-status="${s.sync_status}"] .stat-value`);
-          if (card) card.textContent = s.count;
-        });
-      }
-      if (data.total !== undefined) {
-        document.getElementById("sync-total").textContent = data.total;
-      }
+      if (!data.statuses) return;
+
+      const total = data.total || 0;
+      const statusMap = {};
+      data.statuses.forEach(s => { statusMap[s.sync_status] = s.count; });
+
+      ["transcribed", "downloaded", "pending", "error"].forEach(status => {
+        const count = statusMap[status] || 0;
+        const pct = total > 0 ? (count / total * 100) : 0;
+
+        const segment = document.querySelector(`.sync-progress-segment[data-status="${status}"]`);
+        if (segment) segment.style.width = pct + "%";
+
+        const pctEl = document.getElementById(`sync-pct-${status}`);
+        if (pctEl) pctEl.textContent = pct.toFixed(1) + "%";
+
+        const cntEl = document.getElementById(`sync-cnt-${status}`);
+        if (cntEl) cntEl.textContent = count;
+      });
+
+      document.getElementById("sync-total").textContent = total;
     } catch {}
   }
-  loadSyncStatus();
-  setInterval(loadSyncStatus, 30000);
+  loadSyncProgress();
+  setInterval(loadSyncProgress, 30000);
+
+  async function loadSyncTable() {
+    const body = document.getElementById("sync-table-body");
+    const loading = document.getElementById("sync-loading");
+    const empty = document.getElementById("sync-empty");
+    const pageInfoEl = document.getElementById("sync-page-info");
+
+    loading.hidden = false;
+    empty.hidden = true;
+    body.innerHTML = "";
+
+    try {
+      const offset = syncPage * syncPageSize;
+      let url = `/api/sync/recordings?limit=${syncPageSize}&offset=${offset}`;
+      if (syncStatusFilter) url += `&status=${encodeURIComponent(syncStatusFilter)}`;
+
+      const resp = await fetch(url);
+      const data = await resp.json();
+      const total = data.total || 0;
+      const recordings = data.recordings || [];
+
+      loading.hidden = true;
+
+      if (recordings.length === 0) {
+        empty.hidden = false;
+        document.getElementById("sync-next-page").disabled = true;
+        document.getElementById("sync-prev-page").disabled = true;
+        pageInfoEl.textContent = "Page 1";
+        return;
+      }
+
+      body.innerHTML = recordings.map(r => {
+        const isError = r.sync_status === "error";
+        const isTranscribed = r.sync_status === "transcribed";
+        let actions = "";
+        if (isError) actions = `<button class="btn-action" data-action="retranscribe" data-id="${r.id}">Reprocess</button>`;
+        if (isTranscribed) actions = `<button class="btn-action" data-action="retranscribe" data-id="${r.id}">Retranscribe</button> <button class="btn-action" data-action="retransliterate" data-id="${r.id}">Retransliterate</button>`;
+
+        return `<tr>
+          <td>${esc(r.id)}</td>
+          <td>${formatDate(r.start_time)}</td>
+          <td>${formatDuration(r.duration)}</td>
+          <td>${esc(r.from_display_name || "")}</td>
+          <td>${esc(r.to_display_name || "")}</td>
+          <td>${esc(r.call_type || "")}</td>
+          <td><span class="status-badge${isError && r.error_message ? " error-tooltip" : ""}" data-status="${esc(r.sync_status)}"${isError && r.error_message ? ` data-error="${esc(r.error_message)}"` : ""}>${esc(r.sync_status)}</span></td>
+          <td>${actions}</td>
+        </tr>`;
+      }).join("");
+
+      body.querySelectorAll(".btn-action").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          handleSyncAction(btn.dataset.action, parseInt(btn.dataset.id, 10), btn);
+        });
+      });
+
+      const totalPages = Math.ceil(total / syncPageSize);
+      pageInfoEl.textContent = `Page ${syncPage + 1} of ${totalPages || 1}`;
+      document.getElementById("sync-prev-page").disabled = syncPage === 0;
+      document.getElementById("sync-next-page").disabled = (syncPage + 1) >= totalPages;
+    } catch (err) {
+      loading.hidden = true;
+      body.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--red)">Error: ${esc(err.message)}</td></tr>`;
+    }
+  }
+  loadSyncTable();
+
+  async function handleSyncAction(action, id, btn) {
+    const origText = btn.textContent;
+    btn.textContent = "...";
+    btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/recordings/${id}/${action}`, { method: "POST" });
+      const data = await resp.json();
+      if (data.success) {
+        btn.textContent = "Done";
+        setTimeout(() => { loadSyncTable(); loadSyncProgress(); }, 1000);
+      } else {
+        btn.textContent = "Error";
+        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+      }
+    } catch {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+    }
+  }
+
+  document.getElementById("sync-page-size").addEventListener("change", (e) => {
+    syncPageSize = Number(e.target.value);
+    syncPage = 0;
+    loadSyncTable();
+  });
+
+  document.getElementById("sync-status-filter").addEventListener("change", (e) => {
+    syncStatusFilter = e.target.value;
+    syncPage = 0;
+    loadSyncTable();
+  });
+
+  document.getElementById("sync-prev-page").addEventListener("click", () => {
+    if (syncPage > 0) { syncPage--; loadSyncTable(); }
+  });
+
+  document.getElementById("sync-next-page").addEventListener("click", () => {
+    syncPage++;
+    loadSyncTable();
+  });
+
+  document.getElementById("sync-bulk-retranscribe").addEventListener("click", async () => {
+    const btn = document.getElementById("sync-bulk-retranscribe");
+    btn.textContent = "Processing...";
+    btn.disabled = true;
+    try {
+      const filterStatus = syncStatusFilter || "error";
+      const resp = await fetch("/api/recordings/bulk-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "retranscribe", filter: { status: filterStatus } }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        btn.textContent = `Done (${data.count})`;
+        loadSyncProgress();
+        loadSyncTable();
+        setTimeout(() => { btn.textContent = "Retranscribe Filtered"; btn.disabled = false; }, 2000);
+      } else {
+        btn.textContent = "Error";
+        setTimeout(() => { btn.textContent = "Retranscribe Filtered"; btn.disabled = false; }, 2000);
+      }
+    } catch {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = "Retranscribe Filtered"; btn.disabled = false; }, 2000);
+    }
+  });
+
+  document.querySelectorAll(".sync-legend-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const status = item.dataset.status;
+      const filterSelect = document.getElementById("sync-status-filter");
+      filterSelect.value = syncStatusFilter === status ? "" : status;
+      filterSelect.dispatchEvent(new Event("change"));
+    });
+  });
 
   // ── Sync Countdown Timer ──────────────────────────────────────────
 
-  let syncIntervalMinutes = 15;
+  let syncIntervalMinutes = 5;
   let countdownInterval = null;
 
   async function initSyncCountdown() {
     try {
       const resp = await fetch("/api/sync/schedule");
       const data = await resp.json();
-      if (data.interval_minutes) syncIntervalMinutes = data.interval_minutes;
+      if (data.interval_minutes) {
+        syncIntervalMinutes = data.interval_minutes;
+        const sel = document.getElementById("sync-interval-select");
+        if (sel) sel.value = String(data.interval_minutes);
+      }
+      updateLastSyncTime(data.last_sync_at);
     } catch {}
 
     if (countdownInterval) clearInterval(countdownInterval);
     countdownInterval = setInterval(updateCountdown, 1000);
     updateCountdown();
   }
+
+  function updateLastSyncTime(isoStr) {
+    const el = document.getElementById("sync-last-time");
+    if (!el) return;
+    if (!isoStr) { el.textContent = "Never"; return; }
+    const then = new Date(isoStr);
+    const diffSec = Math.floor((Date.now() - then.getTime()) / 1000);
+    if (diffSec < 60) el.textContent = "Just now";
+    else if (diffSec < 3600) el.textContent = `${Math.floor(diffSec / 60)}m ago`;
+    else if (diffSec < 86400) el.textContent = then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    else el.textContent = then.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Refresh last sync time periodically
+  setInterval(async () => {
+    try {
+      const resp = await fetch("/api/sync/schedule");
+      const data = await resp.json();
+      updateLastSyncTime(data.last_sync_at);
+    } catch {}
+  }, 30000);
 
   function updateCountdown() {
     const now = Date.now();
@@ -541,150 +972,31 @@
 
     // When countdown reaches 0, refresh sync status
     if (totalSec === 0) {
-      loadSyncStatus();
+      loadSyncProgress();
+      loadSyncTable();
     }
   }
+
+  // Interval dropdown change handler
+  document.getElementById("sync-interval-select")?.addEventListener("change", async (e) => {
+    const minutes = Number(e.target.value);
+    try {
+      const resp = await fetch("/api/sync/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interval_minutes: minutes }),
+      });
+      if (resp.ok) {
+        syncIntervalMinutes = minutes;
+        if (countdownInterval) clearInterval(countdownInterval);
+        countdownInterval = setInterval(updateCountdown, 1000);
+        updateCountdown();
+      }
+    } catch {}
+  });
 
   initSyncCountdown();
 
-  // ── Clickable Stat Cards ──────────────────────────────────────────
-
-  document.querySelectorAll(".stat-card").forEach(card => {
-    card.addEventListener("click", () => {
-      const status = card.dataset.status;
-      // Toggle: if same card clicked, close panel
-      if (syncRecStatus === status) {
-        closeSyncRecPanel();
-        return;
-      }
-      // Highlight active card
-      document.querySelectorAll(".stat-card").forEach(c => c.classList.remove("active"));
-      card.classList.add("active");
-      syncRecStatus = status;
-      syncRecPage = 0;
-      loadSyncRecordings();
-    });
-  });
-
-  async function loadSyncRecordings() {
-    const panel = document.getElementById("sync-recordings-panel");
-    const body = document.getElementById("sync-recordings-body");
-    const title = document.getElementById("sync-recordings-title");
-    const pageInfoEl = document.getElementById("sync-rec-page-info");
-
-    panel.hidden = false;
-    title.textContent = `${syncRecStatus.charAt(0).toUpperCase() + syncRecStatus.slice(1)} Recordings`;
-    body.innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
-
-    try {
-      const offset = syncRecPage * SYNC_REC_LIMIT;
-      const resp = await fetch(`/api/sync/recordings?status=${encodeURIComponent(syncRecStatus)}&limit=${SYNC_REC_LIMIT}&offset=${offset}`);
-      const data = await resp.json();
-      const total = data.total || 0;
-      const recordings = data.recordings || [];
-
-      if (recordings.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No recordings</td></tr>';
-      } else {
-        body.innerHTML = recordings.map(r => `<tr>
-          <td>${esc(r.id)}</td>
-          <td>${formatDate(r.start_time)}</td>
-          <td>${esc(r.from_display_name || "")}</td>
-          <td>${esc(r.to_display_name || "")}</td>
-          <td>${esc(r.call_type || "")}</td>
-          <td>
-            <button class="btn-action" data-action="retranscribe" data-id="${r.id}">Retranscribe</button>
-            <button class="btn-action" data-action="retransliterate" data-id="${r.id}">Retransliterate</button>
-          </td>
-        </tr>`).join("");
-
-        // Attach action handlers
-        body.querySelectorAll(".btn-action").forEach(btn => {
-          btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            handleRecordingAction(btn.dataset.action, parseInt(btn.dataset.id, 10), btn);
-          });
-        });
-      }
-
-      const totalPages = Math.ceil(total / SYNC_REC_LIMIT);
-      pageInfoEl.textContent = `Page ${syncRecPage + 1} of ${totalPages || 1}`;
-      document.getElementById("sync-rec-prev").disabled = syncRecPage === 0;
-      document.getElementById("sync-rec-next").disabled = (syncRecPage + 1) >= totalPages;
-    } catch (err) {
-      body.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${esc(err.message)}</td></tr>`;
-    }
-  }
-
-  function closeSyncRecPanel() {
-    document.getElementById("sync-recordings-panel").hidden = true;
-    document.querySelectorAll(".stat-card").forEach(c => c.classList.remove("active"));
-    syncRecStatus = null;
-  }
-
-  document.getElementById("sync-panel-close").addEventListener("click", closeSyncRecPanel);
-
-  document.getElementById("sync-rec-prev").addEventListener("click", () => {
-    if (syncRecPage > 0) { syncRecPage--; loadSyncRecordings(); }
-  });
-
-  document.getElementById("sync-rec-next").addEventListener("click", () => {
-    syncRecPage++;
-    loadSyncRecordings();
-  });
-
-  // ── Retranscribe / Retransliterate Actions ────────────────────────
-
-  async function handleRecordingAction(action, id, btn) {
-    const origText = btn.textContent;
-    btn.textContent = "...";
-    btn.disabled = true;
-
-    try {
-      const resp = await fetch(`/api/recordings/${id}/${action}`, { method: "POST" });
-      const data = await resp.json();
-      if (data.success) {
-        btn.textContent = "Done";
-        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
-        loadSyncStatus();
-      } else {
-        btn.textContent = "Error";
-        setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
-      }
-    } catch {
-      btn.textContent = "Error";
-      setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
-    }
-  }
-
-  // Bulk retranscribe
-  document.getElementById("sync-bulk-retranscribe").addEventListener("click", async () => {
-    if (!syncRecStatus) return;
-    const btn = document.getElementById("sync-bulk-retranscribe");
-    btn.textContent = "Processing...";
-    btn.disabled = true;
-
-    try {
-      const resp = await fetch("/api/recordings/bulk-action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "retranscribe", filter: { status: syncRecStatus } }),
-      });
-      const data = await resp.json();
-      if (data.success) {
-        btn.textContent = `Done (${data.count})`;
-        loadSyncStatus();
-        if (syncRecStatus) loadSyncRecordings();
-        setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
-      } else {
-        btn.textContent = "Error";
-        setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
-      }
-    } catch {
-      btn.textContent = "Error";
-      setTimeout(() => { btn.textContent = "Retranscribe All"; btn.disabled = false; }, 2000);
-    }
-  });
 
   // ── Speakers ─────────────────────────────────────────────────────
 

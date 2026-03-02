@@ -1,3 +1,0 @@
-requests
-indic_transliteration
-websocket-client
